@@ -50,6 +50,9 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 #include "String.h"
 #include "Client.h"
 
+#include "Http2Frame.h"
+#include <map>
+
 // CRLF characters to terminate lines/handshakes in headers.
 #define CRLF "\r\n"
 
@@ -91,26 +94,35 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 #define WS_CLOSE_UNSUPPORTED "Unsupported WebSocket opcode"
 #define WS_CLOSE_BAD_REQUEST "Bad Request"
 
-typedef std::size_t WS_SIZE_T;
+typedef int WS_SIZE_T;
+const WS_SIZE_T WS_SIZE_T_NONE = (WS_SIZE_T)(-1);
+const WS_SIZE_T WS_SIZE_T_HEADER = (WS_SIZE_T)(-2);
 
 class WebSocketClient {
 public:
-
     // Handle connection requests to validate and process/refuse
     // connections.
-    bool handshake(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000);
+    bool handshake_h1(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000);
+    Http2Frame::StreamIdentifier handshake_h2(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000);
+
+    bool handshake(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000) {
+        return handshake_h2(client, socketio, timeoutMsec);
+    }
 
     // Get data off of the stream
-    std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL);
-    bool getData(String& data, uint8_t *opcode = NULL);
+    std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
+    bool getData(String& data, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
 
     // Write data to the stream
-    std::size_t sendData(const char *str, std::size_t size, uint8_t opcode);
-    std::size_t sendData(const String& str, uint8_t opcode) {
-        return sendData(str.c_str(), str.length(), opcode);
+    std::size_t sendData(const char *str, std::size_t size, uint8_t opcode, Http2Frame::StreamIdentifier streamId = 1);
+    std::size_t sendData(const String& str, uint8_t opcode, Http2Frame::StreamIdentifier streamId = 1) {
+        return sendData(str.c_str(), str.length(), opcode, streamId);
     }
 
     WS_SIZE_T handleStream();
+
+
+    void _handle_h2(String *temp);
 
     bool issocketio;
     char *path;
@@ -145,14 +157,49 @@ private:
         unsigned long _startMillis;
     } receivingFrame;
 
+    WS_SIZE_T _handleStream(WebSocketClient::ReceivingFrame *receivingFrame, Http2Frame::StreamIdentifier streamId);
+
+
     const char *socket_urlPrefix;
 
     // Discovers if the client's header is requesting an upgrade to a
     // websocket connection.
-    bool analyzeRequest(std::uint32_t timeoutMsec);
+    bool analyzeRequest_h1(std::uint32_t timeoutMsec);
+
+    bool setting_h2(std::uint32_t timeoutMsec);
+    Http2Frame::StreamIdentifier connect_h2(Http2Frame::StreamIdentifier id, std::uint32_t timeoutMsec);
+
 
     // Disconnect user gracefully.
-    void disconnectStream();
+    void disconnectStream_h1();
+    void disconnectStream_h2();
+
+    String h2TempBuffer;
+    Http2Status h2Status;
+
+    struct H2SendingStream {
+        uint32_t serverWindowSize;
+        uint32_t clientWindowSize;
+        uint32_t totalRxSize;
+        uint32_t totalTxSize;
+        ReceivingFrame receivingFrame;
+        H2SendingStream() : serverWindowSize(0), clientWindowSize(0), totalRxSize(0) {
+            // Empty
+        }
+    };
+
+    std::map<Http2Frame::StreamIdentifier, H2SendingStream> h2Stream;
+
+    Http2Frame::StreamIdentifier genNewStreamId() {
+        static Http2Frame::StreamIdentifier nextStreamId = 1;
+        while (true) {
+            Http2Frame::StreamIdentifier id = nextStreamId;
+            nextStreamId = (nextStreamId+2) & 0x7FFFFFFF;
+            if (h2Stream.find(id) == h2Stream.end()) {
+                return id;
+            }
+        }
+    }
 };
 
 
