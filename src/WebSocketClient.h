@@ -50,11 +50,9 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 #include "String.h"
 #include "Client.h"
 
+#include "Http1Header.h"
 #include "Http2Frame.h"
 #include <map>
-
-// CRLF characters to terminate lines/handshakes in headers.
-#define CRLF "\r\n"
 
 // Amount of time (in ms) a user may be connected before getting disconnected
 // for timing out (i.e. not sending any data to the server).
@@ -97,17 +95,29 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 typedef int WS_SIZE_T;
 const WS_SIZE_T WS_SIZE_T_NONE = (WS_SIZE_T)(-1);
 const WS_SIZE_T WS_SIZE_T_HEADER = (WS_SIZE_T)(-2);
-
 class WebSocketClient {
 public:
+    enum HTTPHandshakeVersion {
+        ONLY_HTTP_VERSION_1_1,
+        ONLY_HTTP_VERSION_2_0,  // rfc8441
+        PREFER_HTTP_VERSION_1_1,
+        PREFER_HTTP_VERSION_2_0  // rfc8441
+    };
+    enum HTTPVersion {
+        HTTP_VERSION_1_1,
+        HTTP_VERSION_2_0,
+        HTTP_VERSION_UNKNOWN
+    };
+    WebSocketClient(Client &client, const char *host, HTTPHandshakeVersion httpHandshakeVersion=ONLY_HTTP_VERSION_1_1, bool socketio = false);
     // Handle connection requests to validate and process/refuse
     // connections.
-    bool handshake_h1(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000);
-    Http2Frame::StreamIdentifier handshake_h2(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000);
+    Http2Frame::StreamIdentifier handshake_h1(const char *path, const char *protocol, std::uint32_t timeoutMsec=10000);
+    Http2Frame::StreamIdentifier handshake_h2(const char *path, const char *protocol, std::uint32_t timeoutMsec=10000);
 
-    bool handshake(Client &client, bool socketio = false, std::uint32_t timeoutMsec=10000) {
-        return handshake_h2(client, socketio, timeoutMsec);
-    }
+    Http2Frame::StreamIdentifier handshake(const char *path, const char *protocol, std::uint32_t timeoutMsec=10000);
+
+    void bye(Http2Frame::StreamIdentifier streamId = 1);
+    void reset();
 
     // Get data off of the stream
     std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
@@ -121,16 +131,22 @@ public:
 
     WS_SIZE_T handleStream();
 
+    HTTPVersion getHTTPVersion() const {
+        return httpVersion;
+    }
+
 
     void _handle_h2(String *temp);
 
-    bool issocketio;
-    char *path;
-    char *host;
-    char *protocol;
-
 private:
-    Client *socket_client;
+    Client * const socket_client;
+    const char *host;
+    const HTTPHandshakeVersion httpHandshakeVersion;
+    const bool issocketio;
+
+    HTTPVersion httpVersion;
+    
+
     // socket.io session id
     char sid[32];
 
@@ -160,19 +176,17 @@ private:
     WS_SIZE_T _handleStream(WebSocketClient::ReceivingFrame *receivingFrame, Http2Frame::StreamIdentifier streamId);
 
 
-    const char *socket_urlPrefix;
-
     // Discovers if the client's header is requesting an upgrade to a
     // websocket connection.
-    bool analyzeRequest_h1(std::uint32_t timeoutMsec);
+    bool analyzeRequest_h1(const char *path, const char *protocol, std::uint32_t timeoutMsec);
 
     bool setting_h2(std::uint32_t timeoutMsec);
-    Http2Frame::StreamIdentifier connect_h2(Http2Frame::StreamIdentifier id, std::uint32_t timeoutMsec);
+    Http2Frame::StreamIdentifier connect_h2(const char *path, const char *protocol, Http2Frame::StreamIdentifier id, std::uint32_t timeoutMsec);
 
 
     // Disconnect user gracefully.
     void disconnectStream_h1();
-    void disconnectStream_h2();
+    void disconnectStream_h2(Http2Frame::StreamIdentifier streamId);
 
     String h2TempBuffer;
     Http2Status h2Status;
