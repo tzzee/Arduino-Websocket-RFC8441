@@ -28,6 +28,11 @@ void WebSocketClient::reset() {
         socket_client->write(goawayAckFrame.toBytes(), goawayAckFrame.bytesSize());
         socket_client->stop();
     }
+    while(h2BufferedRxDataQueue.size()>0) {
+        H2BufferedRxData item = h2BufferedRxDataQueue.front();
+        delete[] item.data;
+        h2BufferedRxDataQueue.pop();
+    }
     h2Status.init();
     switch (httpHandshakeVersion) {
     case ONLY_HTTP_VERSION_1_1:
@@ -87,6 +92,7 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake_h2(const char *path, con
             return 0;
         }
     } else {
+        log_w("No client connected");
         return 0;
     }
 }
@@ -280,17 +286,20 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
 
     recvMillis = millis();
     while (waitForPeek(socket_client, recvMillis, timeoutMsec)) {
-        int remain = handleStream();  // process incoming frames
-        log_d("handleStream remain=%d", remain);
+        const bool enableQueue = false;  // must be false during handshake
+        int remain = handleStream(enableQueue);  // process incoming frames
         if (remain == WS_SIZE_T_HEADER) {
             continue;  // need more data
         } else if (0 <= remain) {
             char data[remain];  // reserve space
             uint8_t opcode;
             Http2Frame::StreamIdentifier streamId;
-            const std::size_t len = getData(data, (std::size_t)remain, &opcode, &streamId);
+            const std::size_t len = getData(data, (std::size_t)remain, &opcode, &streamId, enableQueue);
             log_d("getData len=%d, opcode=%d, streamId=%u", (int)len, opcode, streamId);
-            // !TODO data process
+            // buffer the data when connection processing
+            char* dataBuffer = new char[len];   
+            memcpy(dataBuffer, data, len);
+            h2BufferedRxDataQueue.push({streamId, dataBuffer, len, 0U, opcode});
             remain -= len;            
         }
         if (h2Stream.find(id) != h2Stream.end()) {
@@ -429,6 +438,7 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake(const char *path, const 
         return handshake_h2(path, protocol, timeoutMsec);
     } break;
     default:
+        log_e("HTTP version unknown after auto-detection");
         break;
     }
     return false;  // should not reach here
@@ -456,6 +466,7 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake_h1(const char *path, con
             return false;
         }
     } else {
+        log_w("No client connected");
         return 0;
     }
 }
@@ -766,7 +777,10 @@ void WebSocketClient::_handle_h2(String *temp) {
 
 }
 
-WS_SIZE_T WebSocketClient::handleStream() {
+WS_SIZE_T WebSocketClient::handleStream(bool enableQueue) {
+    if (enableQueue && h2BufferedRxDataQueue.size()) {
+        return h2BufferedRxDataQueue.front().length;
+    }
     ReceivingFrame* rf;
     Http2Frame::StreamIdentifier sid = 0;
     switch (httpVersion) {
@@ -936,7 +950,24 @@ bool WebSocketClient::getData(String& str, uint8_t *opcode, Http2Frame::StreamId
     return false;
 }
 
-std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *opcode, Http2Frame::StreamIdentifier* streamId) {
+std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *opcode, Http2Frame::StreamIdentifier* streamId, bool enableQueue) {
+    if (enableQueue && h2BufferedRxDataQueue.size()) {
+        const std::size_t len = std::min(length, h2BufferedRxDataQueue.front().length);
+        memcpy(data, h2BufferedRxDataQueue.front().data+h2BufferedRxDataQueue.front().cursor, len);
+        if (streamId) {
+            *streamId = h2BufferedRxDataQueue.front().streamId;
+        }
+        h2BufferedRxDataQueue.front().length -= len;
+        h2BufferedRxDataQueue.front().cursor += len;
+        if (opcode) {
+            *opcode = h2BufferedRxDataQueue.front().opcode;
+        }
+        if (h2BufferedRxDataQueue.front().length == 0) {
+            delete[] h2BufferedRxDataQueue.front().data;
+            h2BufferedRxDataQueue.pop();
+        }
+        return len;
+    }
     const int remain = handleStream();
     ReceivingFrame* rf;
     switch (httpVersion) {
@@ -973,7 +1004,7 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
         log_d("socket not connected or no data available");
         return 0;
     }
-    if (opcode != NULL) {
+    if (opcode) {
         *opcode = rf->frame.opcode;
     }
     std::size_t len = 0;

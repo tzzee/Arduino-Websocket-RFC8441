@@ -53,6 +53,7 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 #include "Http1Header.h"
 #include "Http2Frame.h"
 #include <map>
+#include <queue>
 
 // Amount of time (in ms) a user may be connected before getting disconnected
 // for timing out (i.e. not sending any data to the server).
@@ -120,7 +121,7 @@ public:
     void reset();
 
     // Get data off of the stream
-    std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
+    std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL, bool enableQueue = true);
     bool getData(String& data, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
 
     // Write data to the stream
@@ -129,7 +130,7 @@ public:
         return sendData(str.c_str(), str.length(), opcode, streamId);
     }
 
-    WS_SIZE_T handleStream();
+    WS_SIZE_T handleStream(bool enableQueue = true);
 
     HTTPVersion getHTTPVersion() const {
         return httpVersion;
@@ -203,6 +204,15 @@ private:
     };
 
     std::map<Http2Frame::StreamIdentifier, H2SendingStream> h2Stream;
+
+    struct H2BufferedRxData {
+        Http2Frame::StreamIdentifier streamId;
+        char* data;
+        size_t length;
+        size_t cursor;
+        uint8_t opcode;
+    };
+    std::queue<H2BufferedRxData> h2BufferedRxDataQueue;
 
     Http2Frame::StreamIdentifier genNewStreamId() {
         static Http2Frame::StreamIdentifier nextStreamId = 1;
