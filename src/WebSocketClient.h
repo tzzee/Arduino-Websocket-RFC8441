@@ -116,7 +116,7 @@ public:
 
     Http2Frame::StreamIdentifier handshake(const char *path, const char *protocol, std::uint32_t timeoutMsec=10000);
 
-    void bye(Http2Frame::StreamIdentifier streamId = 1);
+    void bye(Http2Frame::StreamIdentifier streamId = 1, bool terminateCode = false);
     void reset();
 
     // Get data off of the stream
@@ -185,8 +185,8 @@ private:
 
 
     // Disconnect user gracefully.
-    void disconnectStream_h1();
-    void disconnectStream_h2(Http2Frame::StreamIdentifier streamId);
+    void disconnectStream_h1(bool terminateCode);
+    void disconnectStream_h2(Http2Frame::StreamIdentifier streamId, bool terminateCode);
 
     String h2TempBuffer;
     Http2Status h2Status;

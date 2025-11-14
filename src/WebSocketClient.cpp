@@ -23,6 +23,11 @@ static void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 }
 
 void WebSocketClient::reset() {
+    if (h2Status.connected) {
+        Http2Frame goawayAckFrame(Http2Frame::FRAME_TYPE_GOAWAY, Http2Frame::FRAME_FLAG_END_STREAM, 0, 0);
+        socket_client->write(goawayAckFrame.toBytes(), goawayAckFrame.bytesSize());
+        socket_client->stop();
+    }
     h2Status.init();
     switch (httpHandshakeVersion) {
     case ONLY_HTTP_VERSION_1_1:
@@ -50,12 +55,12 @@ WebSocketClient::WebSocketClient(Client &client, const char *host, HTTPHandshake
     reset();
 }
 
-void WebSocketClient::bye(Http2Frame::StreamIdentifier streamId) {
+void WebSocketClient::bye(Http2Frame::StreamIdentifier streamId, bool terminateCode) {
     if (httpVersion == HTTP_VERSION_2_0) {
-        disconnectStream_h2(streamId);
+        disconnectStream_h2(streamId, terminateCode);
     } else if (streamId == 1) {
         // HTTP/1.1
-        disconnectStream_h1();
+        disconnectStream_h1(terminateCode);
     }
 }
 
@@ -72,13 +77,13 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake_h2(const char *path, con
             if (connect_h2(path, protocol, streamId, timeoutMsec)) {
                 return streamId;
             } else {
-                disconnectStream_h2(streamId);
+                disconnectStream_h2(streamId, true);
                 return 0;
             }
         } else {
             // Might just need to break until out of socket_client loop.
             log_w("Invalid handshake");
-            disconnectStream_h2(0);
+            disconnectStream_h2(0, true);
             return 0;
         }
     } else {
@@ -86,54 +91,48 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake_h2(const char *path, con
     }
 }
 
-static bool waitForResponse(Client* socket_client, std::uint32_t startMillis, std::uint32_t timeoutMsec) {
-    Serial.print("Waiting");
+static bool waitForPeek(Client* socket_client, std::uint32_t startMillis = 0, std::uint32_t timeoutMsec = 0) {
     while (!socket_client->available()) {
         if (!socket_client->connected()) {
             Serial.println();
             Serial.println("Connection diffused");
             return false;
-        } else if ((millis() - startMillis) > timeoutMsec) {
-            socket_client->stop();
-            Serial.println();
-            Serial.println("Connection timeout");
-            return false;
-        }
-        delay(100);
-        Serial.print(".");
-    }
-    Serial.println();
-    return true;
-}
-
-static int waitForByte(Client* socket_client, std::uint32_t startMillis = 0, std::uint32_t timeoutMsec = 0) {
-    while (!socket_client->available()) {
-        if (!socket_client->connected()) {
-            Serial.println();
-            Serial.println("Connection diffused");
-            return -1;
         } else if (timeoutMsec > 0) {
             if ((millis() - startMillis) > timeoutMsec) {
                 socket_client->stop();
                 Serial.println();
                 Serial.println("Connection timeout");
-                return -1;
+                return false;
             }
             delay(1);
         } else {
-            return -1;
+            return false;
         }
+    }
+    return true;
+}
+
+static bool waitForResponse(Client* socket_client, std::uint32_t startMillis, std::uint32_t timeoutMsec) {
+    Serial.print("Waiting");
+    if (!waitForPeek(socket_client, startMillis, timeoutMsec)) {
+        return false;
+    }
+    return true;
+}
+
+static int waitForRead(Client* socket_client, std::uint32_t startMillis = 0, std::uint32_t timeoutMsec = 0) {
+    if (!waitForPeek(socket_client, startMillis, timeoutMsec)) {
+        return -1;
     }
     return socket_client->read();
 }
 
 static bool flushHttp1Response(Client* socket_client, std::uint32_t startMillis = 0, std::uint32_t timeoutMsec = 0) {
-    int bite;
     int contentLength = 0;
     String temp = "";
     while(true) {
-        bite = waitForByte(socket_client, startMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-        if (bite == -1) {
+        const int bite = waitForRead(socket_client, startMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+        if (bite < 0) {
             hexdump(temp.c_str(), temp.length());
             log_e("connection error waiting for server response to preface");
             return false;
@@ -152,8 +151,8 @@ static bool flushHttp1Response(Client* socket_client, std::uint32_t startMillis 
         }
     }
     while (0<contentLength) {
-        bite = waitForByte(socket_client, startMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-        if (bite == -1) {
+        const int bite = waitForRead(socket_client, startMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+        if (bite < 0) {
             log_e("connection error waiting for server response to preface");
             return false;
         }
@@ -167,8 +166,6 @@ bool WebSocketClient::setting_h2(std::uint32_t timeoutMsec) {
     if (h2Status.connected) {
         return true;  // already connected
     }
-    h2TempBuffer= "";
-    int bite;
     uint32_t recvMillis = millis();
 
     h2Status.init();
@@ -197,9 +194,10 @@ bool WebSocketClient::setting_h2(std::uint32_t timeoutMsec) {
     }
 
     recvMillis = millis();
+    h2TempBuffer = "";
     while (true) {
-        bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-        if (bite == -1) {
+        const int bite = waitForRead(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+        if (bite < 0) {
             hexdump(h2TempBuffer.c_str(), h2TempBuffer.length());
             log_e("connection error waiting for server response to preface");
             return false;
@@ -235,7 +233,6 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
     if (!h2Status.connected) {
         return false;  // not connected
     }
-    int bite;
     bool foundupgrade = false;
     bool foundsid = false;
     unsigned long intkey[2];
@@ -282,17 +279,20 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
     }
 
     recvMillis = millis();
-    while (true) {
-        bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-        if (bite == -1) {
-            hexdump(h2TempBuffer.c_str(), h2TempBuffer.length());
-            log_w("connection error waiting for server response to preface");
-            return 0;
+    while (waitForPeek(socket_client, recvMillis, timeoutMsec)) {
+        int remain = handleStream();  // process incoming frames
+        log_d("handleStream remain=%d", remain);
+        if (remain == WS_SIZE_T_HEADER) {
+            continue;  // need more data
+        } else if (0 <= remain) {
+            char data[remain];  // reserve space
+            uint8_t opcode;
+            Http2Frame::StreamIdentifier streamId;
+            const std::size_t len = getData(data, (std::size_t)remain, &opcode, &streamId);
+            log_d("getData len=%d, opcode=%d, streamId=%u", (int)len, opcode, streamId);
+            // !TODO data process
+            remain -= len;            
         }
-        log_v("%02x", bite);
-        h2TempBuffer += (char)bite;
-        _handle_h2(&h2TempBuffer);
-
         if (h2Stream.find(id) != h2Stream.end()) {
             log_d("WebSocket over HTTP/2 established");
             return id;  // success
@@ -308,13 +308,12 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake(const char *path, const 
         if (socket_client->connected()) {
             uint32_t recvMillis = millis();
             String temp = "";
-            int bite;
             if (httpHandshakeVersion == PREFER_HTTP_VERSION_2_0) {
                 // try HTTP/2 first, if fails, fallback to HTTP/1.1
                 socket_client->print(Http2Frame::HTTP2_CONNECTION_PREFACE);  // HTTP/2 connection preface
                 while (true) {
-                    bite = waitForByte(socket_client, recvMillis, 1000);  // read byte by byte until timeout or end of headers
-                    if (bite == -1) {
+                    const int bite = waitForRead(socket_client, recvMillis, 1000);  // read byte by byte until timeout or end of headers
+                    if (bite < 0) {
                         httpVersion = HTTP_VERSION_2_0;
                         log_d("No response means HTTP/2 preface accepted");
                         socket_client->stop();
@@ -361,8 +360,8 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake(const char *path, const 
                 recvMillis = millis();
                 int statusCode = 0;
                 while (true) {
-                    bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-                    if (bite == -1) {
+                    const int bite = waitForRead(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+                    if (bite < 0) {
                         hexdump(temp.c_str(), temp.length());
                         log_w("connection error waiting for server response to preface");
                         return 0;
@@ -379,8 +378,8 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake(const char *path, const 
                 temp = "";
                 int contentLength = 0;
                 while (true) {
-                    bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-                    if (bite == -1) {
+                    const int bite = waitForRead(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+                    if (bite < 0) {
                         hexdump(temp.c_str(), temp.length());
                         log_w("connection error waiting for server response to preface");
                         return 0;
@@ -390,8 +389,8 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake(const char *path, const 
                     const Http1Header::HeaderField headerField = Http1Header::HeaderField::fromBytes((const uint8_t*)temp.c_str(), &r);
                     if (headerField.state == Http1Header::HeaderField::State::EndOfHeaders) {
                         while (0<contentLength) {
-                            bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-                            if (bite == -1) {
+                            const int bite = waitForRead(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+                            if (bite < 0) {
                                 log_w("connection error waiting for server response to preface");
                                 return 0;
                             }
@@ -453,8 +452,7 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake_h1(const char *path, con
         } else {
             // Might just need to break until out of socket_client loop.
             log_w("Invalid handshake");
-            disconnectStream_h1();
-
+            disconnectStream_h1(true);
             return false;
         }
     } else {
@@ -466,7 +464,6 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
     assert(httpVersion == HTTP_VERSION_1_1);  // Implemation error
     String temp = "";
 
-    int bite;
     bool foundupgrade = false;
     bool foundsid = false;
     unsigned long intkey[2];
@@ -521,8 +518,8 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
     recvMillis = millis();
     temp = "";
     while (true) {
-        bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-        if (bite == -1) {
+        const int bite = waitForRead(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+        if (bite < 0) {
             hexdump(temp.c_str(), temp.length());
             log_w("connection error waiting for server response to preface");
             return 0;
@@ -537,8 +534,8 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
     }
     temp = "";
     while (true) {
-        bite = waitForByte(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
-        if (bite == -1) {
+        const int bite = waitForRead(socket_client, recvMillis, timeoutMsec);  // read byte by byte until timeout or end of headers
+        if (bite < 0) {
             hexdump(temp.c_str(), temp.length());
             log_w("connection error waiting for server response to preface");
             return 0;
@@ -785,8 +782,8 @@ WS_SIZE_T WebSocketClient::handleStream() {
             rf = &h2Stream[sid].receivingFrame;
         } else {
             // h2
-            const int bite = waitForByte(socket_client);  // read byte by byte until timeout or end of headers
-            if (bite == -1) {
+            const int bite = waitForRead(socket_client);  // read byte by byte until timeout or end of headers
+            if (bite < 0) {
                 return WS_SIZE_T_NONE;
             }
             log_v("%02x", bite);
@@ -802,14 +799,14 @@ WS_SIZE_T WebSocketClient::handleStream() {
     default:
         return WS_SIZE_T_NONE;  // should not reach here
     }
-    const WS_SIZE_T r = _handleStream(rf, sid);
+    const WS_SIZE_T remain = _handleStream(rf, sid);
     if (httpVersion == HTTP_VERSION_2_0) {
-        if (r == WS_SIZE_T_HEADER && h2Status.receivingData.subtract(1)) {
+        if (remain == WS_SIZE_T_HEADER && h2Status.receivingData.subtract(1)) {
             // end stream
             h2Stream.erase(sid);
         }
     }
-    return r;
+    return remain;
 }
 
 WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Http2Frame::StreamIdentifier streamId) {
@@ -840,7 +837,7 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
                 // value, the receiving endpoint MUST _Fail the WebSocket
                 // Connection_.
                 sendData((const char*)WS_CLOSE_BAD_REQUEST, sizeof(WS_CLOSE_BAD_REQUEST)-1, WS_OPCODE_CLOSE, streamId);
-                socket_client->stop();
+                bye(streamId, false);
                 return WS_SIZE_T_NONE;
             } else {
                 rf->frame.fin = ((finOpcode & WS_FIN) != 0);
@@ -857,7 +854,7 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
                     break;
                 default:
                     sendData((const char*)WS_CLOSE_UNSUPPORTED, sizeof(WS_CLOSE_UNSUPPORTED)-1, WS_OPCODE_CLOSE, streamId);
-                    socket_client->stop();
+                    bye(streamId, false);
                     return WS_SIZE_T_NONE;
                     // If an unknown
                     // opcode is received, the receiving endpoint MUST _Fail the
@@ -1011,7 +1008,7 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
     return length;
 }
 
-void WebSocketClient::disconnectStream_h1() {
+void WebSocketClient::disconnectStream_h1(bool terminateCode) {
     log_v("Terminating socket");
     // Should send 0x8700 to server to tell it I'm quitting here.
     socket_client->write((uint8_t) 0x87);
@@ -1023,22 +1020,24 @@ void WebSocketClient::disconnectStream_h1() {
     reset();
 }
 
-void WebSocketClient::disconnectStream_h2(Http2Frame::StreamIdentifier streamId) {
+void WebSocketClient::disconnectStream_h2(Http2Frame::StreamIdentifier streamId, bool terminateCode) {
     log_w("Terminating socket");
     if (streamId == 0) {
-        socket_client->flush();
-        delay(10);
-        socket_client->stop();
-        reset();
+        disconnectStream_h1(terminateCode);
     } else {
         if (h2Stream.find(streamId) != h2Stream.end()) {
 #if 1
             // Should send 0x8700 to server to tell it I'm quitting here.
-            uint8_t quittingBufferer[2] = {0x87, 0x00};
-            const Http2Frame dataFrame(Http2Frame::FRAME_TYPE_DATA, Http2Frame::FRAME_FLAG_NONE, streamId, sizeof(quittingBufferer), quittingBufferer);
-            socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
+            if (terminateCode) {
+                uint8_t quittingBufferer[2] = {0x87, 0x00};
+                const Http2Frame dataFrame(Http2Frame::FRAME_TYPE_DATA, Http2Frame::FRAME_FLAG_END_STREAM, streamId, sizeof(quittingBufferer), quittingBufferer);
+                socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
+            } else {
+                const Http2Frame dataFrame(Http2Frame::FRAME_TYPE_DATA, Http2Frame::FRAME_FLAG_END_STREAM, streamId, 0);
+                socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
+            }
 #else
-            const Http2Frame rstFrame(Http2Frame::FRAME_TYPE_RST_STREAM, Http2Frame::FRAME_FLAG_NONE, streamId, 0);
+            const Http2Frame rstFrame(Http2Frame::FRAME_TYPE_RST_STREAM, Http2Frame::FRAME_FLAG_END_STREAM, streamId, 0);
             socket_client->write(rstFrame.toBytes(), rstFrame.bytesSize());
             log_d("Sent RST_STREAM frame[%u]: %d bytes", streamId, rstFrame.bytesSize());
 #endif
@@ -1113,6 +1112,8 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
             }
         } break;
         }
+    } else {
+        log_w("Connection not established for sending data");
     }
     return 0;
 }

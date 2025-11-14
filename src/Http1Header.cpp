@@ -71,6 +71,7 @@ Http1Header::ResonseStatus Http1Header::ResonseStatus::fromBytes(const uint8_t* 
     return ResonseStatus();
   }
   char statusCodeStr[4];
+  statusCodeStr[3] = '\0';
   strncpy(statusCodeStr, p, 3);
   const int statusCode = std::atoi(statusCodeStr);
   p += 3; // skip status code
