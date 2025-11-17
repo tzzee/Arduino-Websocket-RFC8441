@@ -623,7 +623,7 @@ void WebSocketClient::_handle_h2(String *temp) {
             case Http2Frame::FRAME_TYPE_SETTINGS: {
                 // SETTINGS frame received
                 // not only at the beginning of the connection
-                if (frame.getFlags() == Http2Frame::FRAME_FLAG_ACK) {
+                if (frame.getFlags()&Http2Frame::FRAME_FLAG_ACK) {
                     // ACK of our SETTINGS frame
                     h2Status.settingsSent = true;
                     log_d("Received SETTINGS ACK frame[%u]: %d bytes", frame.getStreamId(), frame.getPayloadLength());
@@ -682,7 +682,9 @@ void WebSocketClient::_handle_h2(String *temp) {
             } break;
             case Http2Frame::FRAME_TYPE_PING: {
                 // PING frame received
-                if (frame.getFlags() != Http2Frame::FRAME_FLAG_ACK) {
+                if (frame.getFlags()&Http2Frame::FRAME_FLAG_ACK) {
+                    // ACK of our PING frame
+                } else {
                     // respond with PING ACK
                     Http2Frame pingAckFrame(Http2Frame::FRAME_TYPE_PING, Http2Frame::FRAME_FLAG_ACK, 0, 0);
                     socket_client->write(pingAckFrame.toBytes(), pingAckFrame.bytesSize());
@@ -715,7 +717,7 @@ void WebSocketClient::_handle_h2(String *temp) {
                         h2Stream.insert(std::pair<Http2Frame::StreamIdentifier, H2SendingStream>(frame.getStreamId(), H2SendingStream()));
                     }
                 }
-                if (frame.getFlags() == Http2Frame::FRAME_FLAG_END_STREAM) {
+                if (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) {
                     // no DATA frame will be sent
                     log_d("HEADERS frame has END_STREAM flag");
                     h2Stream.erase(frame.getStreamId());
@@ -750,7 +752,7 @@ void WebSocketClient::_handle_h2(String *temp) {
                             log_d("Sent stream-level WINDOW_UPDATE: %u", increment);
                         }
                     }
-                    if (frame.getFlags() == Http2Frame::FRAME_FLAG_END_STREAM) {
+                    if (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) {
                         // no more DATA frame will be sent
                         log_d("DATA frame has END_STREAM flag");
                         h2Status.receivingData.endStream = true;
@@ -1136,7 +1138,7 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                 const std::size_t r = socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
                 h2Status.totalTxSize+=size_buf;
                 h2Stream[streamId].totalTxSize+=size_buf;
-                log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTX=%U/%U", streamId, size_buf, h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
+                log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTx=%U/%U", streamId, size_buf, h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
                 return r - Http2Frame::Http2FrameHeaderSize;
             } else {
                 log_e("Stream ID %u not found", streamId);
