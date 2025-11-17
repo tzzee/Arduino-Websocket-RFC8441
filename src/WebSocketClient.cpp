@@ -1134,9 +1134,9 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                 // send DATA frame
                 const Http2Frame dataFrame(Http2Frame::FRAME_TYPE_DATA, Http2Frame::FRAME_FLAG_NONE, streamId, size_buf, (uint8_t*)buf);
                 const std::size_t r = socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
-                h2Status.totalTxSize+=dataFrame.bytesSize();
-                h2Stream[streamId].totalTxSize+=dataFrame.bytesSize();
-                log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTX=%U/%U", streamId, dataFrame.bytesSize(), h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
+                h2Status.totalTxSize+=size_buf;
+                h2Stream[streamId].totalTxSize+=size_buf;
+                log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTX=%U/%U", streamId, size_buf, h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
                 return r - Http2Frame::Http2FrameHeaderSize;
             } else {
                 log_e("Stream ID %u not found", streamId);
