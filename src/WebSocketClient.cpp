@@ -6,6 +6,11 @@
 #include "WebSocketClientSha1.h"
 #include "WebSocketClientBase64.h"
 #include <base64.h>
+#include <new>
+
+#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
+#include <esp_heap_caps.h>
+#endif
 
 static void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 #ifdef DEBUGGING
@@ -22,17 +27,87 @@ static void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 #endif
 }
 
+static char* ws_alloc(size_t len) {
+#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
+    void* p = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p == nullptr) {
+        p = heap_caps_malloc(len, MALLOC_CAP_8BIT);
+    }
+    return static_cast<char*>(p);
+#else
+    return new (std::nothrow) char[len];
+#endif
+}
+
+static void ws_free(char* p) {
+    if (p == nullptr) {
+        return;
+    }
+#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
+    heap_caps_free(p);
+#else
+    delete[] p;
+#endif
+}
+
+void WebSocketClient::clearH2BufferedRxDataQueue() {
+    while (!h2BufferedRxDataQueue.empty()) {
+        H2BufferedRxData &item = h2BufferedRxDataQueue.front();
+        ws_free(item.data);
+        item.data = nullptr;
+        h2BufferedRxDataQueue.pop();
+    }
+    h2BufferedRxDataQueueBytes = 0U;
+}
+
+void WebSocketClient::trimH2BufferedRxDataQueue() {
+    while (!h2BufferedRxDataQueue.empty() &&
+        (h2BufferedRxDataQueue.size() >= H2_BUFFERED_RX_QUEUE_MAX_ITEMS ||
+         h2BufferedRxDataQueueBytes >= H2_BUFFERED_RX_QUEUE_MAX_BYTES)) {
+        H2BufferedRxData &item = h2BufferedRxDataQueue.front();
+        h2BufferedRxDataQueueBytes = (h2BufferedRxDataQueueBytes >= item.length) ? (h2BufferedRxDataQueueBytes - item.length) : 0U;
+        ws_free(item.data);
+        item.data = nullptr;
+        h2BufferedRxDataQueue.pop();
+        log_w("h2BufferedRxDataQueue trimmed");
+    }
+}
+
+bool WebSocketClient::enqueueH2BufferedRxData(Http2Frame::StreamIdentifier streamId, const char* data, size_t len, uint8_t opcode) {
+    if (data == nullptr && len > 0) {
+        return false;
+    }
+    while (!h2BufferedRxDataQueue.empty() &&
+           (h2BufferedRxDataQueue.size() >= H2_BUFFERED_RX_QUEUE_MAX_ITEMS ||
+            h2BufferedRxDataQueueBytes + len > H2_BUFFERED_RX_QUEUE_MAX_BYTES)) {
+        trimH2BufferedRxDataQueue();
+    }
+    if (h2BufferedRxDataQueue.size() >= H2_BUFFERED_RX_QUEUE_MAX_ITEMS ||
+        h2BufferedRxDataQueueBytes + len > H2_BUFFERED_RX_QUEUE_MAX_BYTES) {
+        log_w("h2BufferedRxDataQueue full drop len=%u", (unsigned)len);
+        return false;
+    }
+    char* dataBuffer = nullptr;
+    if (len > 0) {
+        dataBuffer = ws_alloc(len);
+        if (dataBuffer == nullptr) {
+            log_w("h2BufferedRxDataQueue alloc failed len=%u", (unsigned)len);
+            return false;
+        }
+        memcpy(dataBuffer, data, len);
+    }
+    h2BufferedRxDataQueue.push({streamId, dataBuffer, len, 0U, opcode});
+    h2BufferedRxDataQueueBytes += len;
+    return true;
+}
+
 void WebSocketClient::reset() {
     if (h2Status.connected) {
         Http2Frame goawayAckFrame(Http2Frame::FRAME_TYPE_GOAWAY, Http2Frame::FRAME_FLAG_END_STREAM, 0, 0);
         socket_client->write(goawayAckFrame.toBytes(), goawayAckFrame.bytesSize());
         socket_client->stop();
     }
-    while(h2BufferedRxDataQueue.size()>0) {
-        H2BufferedRxData item = h2BufferedRxDataQueue.front();
-        delete[] item.data;
-        h2BufferedRxDataQueue.pop();
-    }
+    clearH2BufferedRxDataQueue();
     h2Status.init();
     switch (httpHandshakeVersion) {
     case ONLY_HTTP_VERSION_1_1:
@@ -297,9 +372,7 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
             const std::size_t len = getData(data, (std::size_t)remain, &opcode, &streamId, enableQueue);
             log_d("getData len=%d, opcode=%d, streamId=%u", (int)len, opcode, streamId);
             // buffer the data when connection processing
-            char* dataBuffer = new char[len];   
-            memcpy(dataBuffer, data, len);
-            h2BufferedRxDataQueue.push({streamId, dataBuffer, len, 0U, opcode});
+            enqueueH2BufferedRxData(streamId, data, len, opcode);
             remain -= len;            
         }
         if (h2Stream.find(id) != h2Stream.end()) {
@@ -955,17 +1028,21 @@ bool WebSocketClient::getData(String& str, uint8_t *opcode, Http2Frame::StreamId
 std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *opcode, Http2Frame::StreamIdentifier* streamId, bool enableQueue) {
     if (enableQueue && h2BufferedRxDataQueue.size()) {
         const std::size_t len = std::min(length, h2BufferedRxDataQueue.front().length);
-        memcpy(data, h2BufferedRxDataQueue.front().data+h2BufferedRxDataQueue.front().cursor, len);
+        if (len > 0 && data != nullptr) {
+            memcpy(data, h2BufferedRxDataQueue.front().data+h2BufferedRxDataQueue.front().cursor, len);
+        }
         if (streamId) {
             *streamId = h2BufferedRxDataQueue.front().streamId;
         }
+        h2BufferedRxDataQueueBytes = (h2BufferedRxDataQueueBytes >= len) ? (h2BufferedRxDataQueueBytes - len) : 0U;
         h2BufferedRxDataQueue.front().length -= len;
         h2BufferedRxDataQueue.front().cursor += len;
         if (opcode) {
             *opcode = h2BufferedRxDataQueue.front().opcode;
         }
         if (h2BufferedRxDataQueue.front().length == 0) {
-            delete[] h2BufferedRxDataQueue.front().data;
+            ws_free(h2BufferedRxDataQueue.front().data);
+            h2BufferedRxDataQueue.front().data = nullptr;
             h2BufferedRxDataQueue.pop();
         }
         return len;

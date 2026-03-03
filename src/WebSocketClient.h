@@ -213,6 +213,12 @@ private:
         uint8_t opcode;
     };
     std::queue<H2BufferedRxData> h2BufferedRxDataQueue;
+    size_t h2BufferedRxDataQueueBytes = 0U;
+    static constexpr size_t H2_BUFFERED_RX_QUEUE_MAX_ITEMS = 16U;
+    static constexpr size_t H2_BUFFERED_RX_QUEUE_MAX_BYTES = 16U * 1024U;
+    void clearH2BufferedRxDataQueue();
+    void trimH2BufferedRxDataQueue();
+    bool enqueueH2BufferedRxData(Http2Frame::StreamIdentifier streamId, const char* data, size_t len, uint8_t opcode);
 
     Http2Frame::StreamIdentifier genNewStreamId() {
         static Http2Frame::StreamIdentifier nextStreamId = 1;
