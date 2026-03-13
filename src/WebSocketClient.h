@@ -47,7 +47,15 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 
 #include <Arduino.h>
 #include <Stream.h>
+#if defined(__has_include)
+#if __has_include("String.h")
 #include "String.h"
+#elif __has_include(<WString.h>)
+#include <WString.h>
+#endif
+#else
+#include "String.h"
+#endif
 #include "Client.h"
 
 #include "Http1Header.h"
