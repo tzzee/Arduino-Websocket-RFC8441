@@ -1053,6 +1053,9 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
     case HTTP_VERSION_1_1: {
         // h1
         rf = &receivingFrame;
+        if (streamId != NULL) {
+            *streamId = 1;  // HTTP/1.1 WebSocket has a single logical stream
+        }
     } break;
     case HTTP_VERSION_2_0: {
         // h2
