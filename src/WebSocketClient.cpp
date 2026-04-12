@@ -172,16 +172,28 @@ Http2Frame::StreamIdentifier WebSocketClient::handshake_h2(const char *path, con
     }
 }
 
+/**
+ * @brief ソケット受信可能状態になるまで待機する
+ * @param socket_client 対象クライアント
+ * @param startMillis タイムアウト判定の開始時刻
+ * @param timeoutMsec タイムアウト時間[ms]。0なら待機しない
+ * @return true 受信可能
+ * @return false 切断またはタイムアウト
+ */
 static bool waitForPeek(Client* socket_client, std::uint32_t startMillis = 0, std::uint32_t timeoutMsec = 0) {
+    static std::uint32_t last_disconnected_log_msec = 0;
+    static constexpr std::uint32_t disconnected_log_interval_msec = 5000;
     while (!socket_client->available()) {
         if (!socket_client->connected()) {
-            Serial.println();
-            Serial.println("Connection diffused");
+            const std::uint32_t now = millis();
+            if ((now - last_disconnected_log_msec) >= disconnected_log_interval_msec) {
+                Serial.println("Connection diffused");
+                last_disconnected_log_msec = now;
+            }
             return false;
         } else if (timeoutMsec > 0) {
             if ((millis() - startMillis) > timeoutMsec) {
                 socket_client->stop();
-                Serial.println();
                 Serial.println("Connection timeout");
                 return false;
             }
