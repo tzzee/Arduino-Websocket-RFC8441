@@ -31,6 +31,7 @@ Http2Frame::SettingFrameField Http2Frame::SettingFrameField::fromBytes(const uin
 Http2Frame::SettingsFramePayload::SettingsFramePayload(std::initializer_list<Http2Frame::SettingFrameField> init) {
   buffer_size = 0;
   for (const auto& fragment : init) {
+    (void)fragment;
     buffer_size += 2; // for setting id
     buffer_size += 4; // for setting value
   }
@@ -84,7 +85,8 @@ String Http2Frame::HeaderFrameField::decodeEncodedString(const uint8_t** p) {
   if (huffmanEncoded) {
     // log_w("Huffman decoding not implemented, skipping %u bytes", length);
     for (std::size_t i = 0; i < length; i++) {
-      uint8_t current_byte = *ptr;
+      const uint8_t current_byte = *ptr;
+      (void)current_byte;
       ptr++;
     }
     *p = ptr;
@@ -104,6 +106,7 @@ Http2Frame::HeaderFrameField Http2Frame::HeaderFrameField::fromBytes(const uint8
   const uint8_t* p = data;
   if ((*p & tableSizeFieldMask) == tableSizeField) {
     const uint32_t tableSize = decodeUnsignedInteger(5, &p);  // skip tableSizeField prefix
+    (void)tableSize;
   }
   uint32_t index = 0;
   if ((*p & indexedHeaderFieldMask) == indexedHeaderField) {  // indexedHeaderField

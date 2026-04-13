@@ -326,9 +326,6 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
     if (!h2Status.connected) {
         return false;  // not connected
     }
-    bool foundupgrade = false;
-    bool foundsid = false;
-    unsigned long intkey[2];
     String serverKey;
     char keyStart[17];
     char b64Key[25];
@@ -562,7 +559,6 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
 
     bool foundupgrade = false;
     bool foundsid = false;
-    unsigned long intkey[2];
     String serverKey;
     char keyStart[17];
     char b64Key[25];
@@ -1018,7 +1014,10 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
                 rf->state = WS_FRAME_PAYLOAD;
                 log_v("mask: %02x %02x %02x %02x", rf->frame.mask[0], rf->frame.mask[1], rf->frame.mask[2], rf->frame.mask[3]);
             }
-        }
+        } break;
+        case WS_FRAME_PAYLOAD: {
+            return rf->frame.length-rf->index;
+        } break;
     }
     return WS_SIZE_T_HEADER;
 }
@@ -1115,6 +1114,10 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
             h2Stream.erase(*streamId);
         }
     } break;
+    case HTTP_VERSION_UNKNOWN:
+    default: {
+        return 0;
+    }
     }
     if (rf->frame.hasMask) {
         // unmask the data
@@ -1236,6 +1239,10 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                 log_e("Stream ID %u not found", streamId);
             }
         } break;
+        case HTTP_VERSION_UNKNOWN:
+        default: {
+            break;
+        }
         }
     } else {
         log_w("Connection not established for sending data");
