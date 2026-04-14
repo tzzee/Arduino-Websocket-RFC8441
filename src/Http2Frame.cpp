@@ -1,5 +1,17 @@
 #include "Http2Frame.h"
 
+#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
+#include <esp_heap_caps.h>
+#endif
+
+#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
+#define HTTP2_ALLOC(sz) heap_caps_malloc((sz), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define HTTP2_FREE(p) heap_caps_free((p))
+#else
+#define HTTP2_ALLOC(sz) new uint8_t[(sz)]
+#define HTTP2_FREE(p) delete[] (p)
+#endif
+
 const char* Http2Frame::HTTP2_CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 static void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
@@ -35,7 +47,11 @@ Http2Frame::SettingsFramePayload::SettingsFramePayload(std::initializer_list<Htt
     buffer_size += 2; // for setting id
     buffer_size += 4; // for setting value
   }
-  buffer = new uint8_t[buffer_size];
+  buffer = static_cast<uint8_t*>(HTTP2_ALLOC(buffer_size));
+  if (buffer == nullptr && buffer_size > 0) {
+    log_e("SettingsFramePayload alloc failed size=%u", static_cast<unsigned>(buffer_size));
+    return;
+  }
   uint8_t* p = buffer;
   for (const auto& fragment : init) {
     *p++ = (uint8_t)(fragment.id >> 8);
@@ -48,12 +64,17 @@ Http2Frame::SettingsFramePayload::SettingsFramePayload(std::initializer_list<Htt
 }
 
 Http2Frame::SettingsFramePayload::~SettingsFramePayload() {
-  delete[] buffer;
+  HTTP2_FREE(buffer);
 }
 Http2Frame::SettingsFramePayload Http2Frame::SettingsFramePayload::fromBytes(const uint8_t* data, const std::size_t size) {
   SettingsFramePayload payload{};
   payload.buffer_size = size;
-  payload.buffer = new uint8_t[size];
+  payload.buffer = static_cast<uint8_t*>(HTTP2_ALLOC(size));
+  if (payload.buffer == nullptr && size > 0) {
+    log_e("SettingsFramePayload::fromBytes alloc failed size=%u", static_cast<unsigned>(size));
+    payload.buffer_size = 0;
+    return payload;
+  }
   memcpy(payload.buffer, data, size);
   return payload;
 }
@@ -214,7 +235,11 @@ Http2Frame::HeadersFramePayload::HeadersFramePayload(std::initializer_list<Http2
     assert(fragment.value.length() <= 0b01111110);
     buffer_size += fragment.value.length();
   }
-  buffer = new uint8_t[buffer_size];
+  buffer = static_cast<uint8_t*>(HTTP2_ALLOC(buffer_size));
+  if (buffer == nullptr && buffer_size > 0) {
+    log_e("HeadersFramePayload alloc failed size=%u", static_cast<unsigned>(buffer_size));
+    return;
+  }
   uint8_t* p = buffer;
   for (const auto& fragment : init) {
     log_d("Header: %s: %s", fragment.name.c_str(), fragment.value.c_str());
@@ -228,19 +253,29 @@ Http2Frame::HeadersFramePayload::HeadersFramePayload(std::initializer_list<Http2
   }
 }
 Http2Frame::HeadersFramePayload::~HeadersFramePayload() {
-  delete[] buffer;
+  HTTP2_FREE(buffer);
 }
 Http2Frame::HeadersFramePayload Http2Frame::HeadersFramePayload::fromBytes(const uint8_t* data, const std::size_t size) {
   HeadersFramePayload payload{};
   payload.buffer_size = size;
-  payload.buffer = new uint8_t[size];
+  payload.buffer = static_cast<uint8_t*>(HTTP2_ALLOC(size));
+  if (payload.buffer == nullptr && size > 0) {
+    log_e("HeadersFramePayload::fromBytes alloc failed size=%u", static_cast<unsigned>(size));
+    payload.buffer_size = 0;
+    return payload;
+  }
   memcpy(payload.buffer, data, size);
   return payload;
 }
 
 Http2Frame::Http2Frame(Http2Frame::FrameType type, FrameFlags flags, StreamIdentifier streamId, std::size_t payloadLength, const uint8_t* payload):
  buffer_size(Http2Frame::Http2FrameHeaderSize + (payload?payloadLength:0)),
- buffer(new uint8_t[buffer_size]) {
+ buffer(static_cast<uint8_t*>(HTTP2_ALLOC(buffer_size))) {
+  if (buffer == nullptr && buffer_size > 0) {
+    log_e("Http2Frame alloc failed size=%u", static_cast<unsigned>(buffer_size));
+    buffer_size = 0;
+    return;
+  }
   assert((streamId==0U || streamId%2==1) && streamId!=0x80000000U);  // must be 0 or odd for client-initiated frames 
   buffer[0] = (payloadLength >> 16) & 0xFF;
   buffer[1] = (payloadLength >> 8) & 0xFF;
@@ -255,7 +290,7 @@ Http2Frame::Http2Frame(Http2Frame::FrameType type, FrameFlags flags, StreamIdent
 };
 
 Http2Frame::~Http2Frame() {
-  delete[] buffer;
+  HTTP2_FREE(buffer);
 }
 
 const std::uint8_t* Http2Frame::toBytes() const {
