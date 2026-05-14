@@ -300,6 +300,8 @@ bool WebSocketClient::setting_h2(std::uint32_t timeoutMsec) {
         size_t r = h2TempBuffer.length();
         const Http1Header::ResonseStatus status = Http1Header::ResonseStatus::fromBytes((const uint8_t*)h2TempBuffer.c_str(), &r);
         if (status.isValid()) {
+            h2TempBuffer.trim();  // remove trailing \r\n
+            log_e("Received HTTP/1.1 response: %s", h2TempBuffer.c_str());
             // HTTP/1.1 400 Bad Request
             h2TempBuffer = "";
             flushHttp1Response(socket_client, recvMillis, timeoutMsec);
