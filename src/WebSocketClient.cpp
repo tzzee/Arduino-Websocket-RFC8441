@@ -1151,11 +1151,12 @@ void WebSocketClient::disconnectStream_h1(bool terminateCode) {
 }
 
 void WebSocketClient::disconnectStream_h2(Http2Frame::StreamIdentifier streamId, bool terminateCode) {
-    log_w("Terminating socket");
     if (streamId == 0) {
+        log_w("Terminating socket");
         disconnectStream_h1(terminateCode);
     } else {
         if (h2Stream.find(streamId) != h2Stream.end()) {
+            log_v("Terminating stream[%u]", streamId);
 #if 1
             // Should send 0x8700 to server to tell it I'm quitting here.
             if (terminateCode) {
@@ -1236,6 +1237,10 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                 h2Status.totalTxSize+=size_buf;
                 h2Stream[streamId].totalTxSize+=size_buf;
                 log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTx=%U/%U", streamId, size_buf, h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
+                if (r <= Http2Frame::Http2FrameHeaderSize) {
+                    log_e("DATA frame send failed or short write streamId=%u raw=%u", streamId, (unsigned)r);
+                    return 0;
+                }
                 return r - Http2Frame::Http2FrameHeaderSize;
             } else {
                 log_e("Stream ID %u not found", streamId);

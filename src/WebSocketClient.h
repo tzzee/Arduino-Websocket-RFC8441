@@ -132,7 +132,11 @@ public:
     std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL, bool enableQueue = true);
     bool getData(String& data, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
 
-    // Write data to the stream
+    /**
+     * @brief WebSocketデータを送信する。
+     * @details HTTP/2時はフレームヘッダ分を除いた送信ペイロード長を返す。
+     *          送信失敗または短書き込み時は0を返す。
+     */
     std::size_t sendData(const char *str, std::size_t size, uint8_t opcode, Http2Frame::StreamIdentifier streamId = 1);
     std::size_t sendData(const String& str, uint8_t opcode, Http2Frame::StreamIdentifier streamId = 1) {
         return sendData(str.c_str(), str.length(), opcode, streamId);
@@ -195,6 +199,11 @@ private:
 
     // Disconnect user gracefully.
     void disconnectStream_h1(bool terminateCode);
+    /**
+     * @brief HTTP/2ストリームを切断する。
+     * @param streamId 0ならソケット全体を切断し、0以外なら対象ストリームを終了する。
+     * @param terminateCode trueのときCloseコードを付けて終了する。
+     */
     void disconnectStream_h2(Http2Frame::StreamIdentifier streamId, bool terminateCode);
 
     String h2TempBuffer;
