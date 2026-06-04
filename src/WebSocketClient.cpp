@@ -1227,20 +1227,27 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
 
         switch (httpVersion) {
         case HTTP_VERSION_1_1: {
-            return socket_client->write((uint8_t*)buf, size_buf);
+            const std::size_t r = socket_client->write((uint8_t*)buf, size_buf);
+            if (r != static_cast<std::size_t>(size_buf)) {
+                log_w("HTTP/1.1 frame send incomplete raw=%u expected=%u", (unsigned)r, (unsigned)size_buf);
+                socket_client->stop();
+                return 0;
+            }
+            return r;
         } break;
         case HTTP_VERSION_2_0: {
             if (h2Stream.find(streamId) != h2Stream.end()) {
                 // send DATA frame
                 const Http2Frame dataFrame(Http2Frame::FRAME_TYPE_DATA, Http2Frame::FRAME_FLAG_NONE, streamId, size_buf, (uint8_t*)buf);
                 const std::size_t r = socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
+                if (r != dataFrame.bytesSize()) {
+                    log_w("DATA frame send incomplete streamId=%u raw=%u expected=%u", streamId, (unsigned)r, (unsigned)dataFrame.bytesSize());
+                    socket_client->stop();
+                    return 0;
+                }
                 h2Status.totalTxSize+=size_buf;
                 h2Stream[streamId].totalTxSize+=size_buf;
                 log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTx=%U/%U", streamId, size_buf, h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
-                if (r <= Http2Frame::Http2FrameHeaderSize) {
-                    log_e("DATA frame send failed or short write streamId=%u raw=%u", streamId, (unsigned)r);
-                    return 0;
-                }
                 return r - Http2Frame::Http2FrameHeaderSize;
             } else {
                 log_e("Stream ID %u not found", streamId);
