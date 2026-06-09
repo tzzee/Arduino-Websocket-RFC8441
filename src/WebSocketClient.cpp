@@ -1247,7 +1247,13 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                 }
                 h2Status.totalTxSize+=size_buf;
                 h2Stream[streamId].totalTxSize+=size_buf;
-                log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTx=%U/%U", streamId, size_buf, h2Status.totalTxSize, h2Status.serverInitialWindowSize+h2Status.serverWindowSize, h2Stream[streamId].totalTxSize, h2Status.serverInitialWindowSize+h2Stream[streamId].serverWindowSize);
+                log_d("Sent DATA frame[%u], length=%u totalTx=%u/%u streamTx=%u/%u",
+                      static_cast<unsigned>(streamId),
+                      static_cast<unsigned>(size_buf),
+                      static_cast<unsigned>(h2Status.totalTxSize),
+                      static_cast<unsigned>(h2Status.serverInitialWindowSize + h2Status.serverWindowSize),
+                      static_cast<unsigned>(h2Stream[streamId].totalTxSize),
+                      static_cast<unsigned>(h2Status.serverInitialWindowSize + h2Stream[streamId].serverWindowSize));
                 return r - Http2Frame::Http2FrameHeaderSize;
             } else {
                 log_e("Stream ID %u not found", streamId);

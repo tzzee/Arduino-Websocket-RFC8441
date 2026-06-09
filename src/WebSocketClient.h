@@ -215,7 +215,7 @@ private:
         uint32_t totalRxSize;
         uint32_t totalTxSize;
         ReceivingFrame receivingFrame;
-        H2SendingStream() : serverWindowSize(0), clientWindowSize(0), totalRxSize(0) {
+        H2SendingStream() : serverWindowSize(0), clientWindowSize(0), totalRxSize(0), totalTxSize(0) {
             // Empty
         }
     };
