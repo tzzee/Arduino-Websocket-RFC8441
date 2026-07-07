@@ -135,6 +135,16 @@ WebSocketClient::WebSocketClient(Client &client, const char *host, HTTPHandshake
     reset();
 }
 
+bool WebSocketClient::hasStream(Http2Frame::StreamIdentifier streamId) const {
+    if (streamId == 0) {
+        return false;
+    }
+    if (httpVersion == HTTP_VERSION_1_1) {
+        return streamId == 1 && socket_client->connected();
+    }
+    return h2Stream.find(streamId) != h2Stream.end();
+}
+
 void WebSocketClient::bye(Http2Frame::StreamIdentifier streamId, bool terminateCode) {
     if (httpVersion == HTTP_VERSION_2_0) {
         disconnectStream_h2(streamId, terminateCode);

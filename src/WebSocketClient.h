@@ -148,6 +148,13 @@ public:
         return httpVersion;
     }
 
+    /**
+     * @brief HTTP/2ストリームがまだ管理対象に残っているかを返す。
+     * @details HTTP/1.1では streamId=1 のみを接続中ストリームとして扱う。
+     *          HTTP/2では RST_STREAM / END_STREAM 後に false になる。
+     */
+    bool hasStream(Http2Frame::StreamIdentifier streamId) const;
+
 
     void _handle_h2(String *temp);
 
