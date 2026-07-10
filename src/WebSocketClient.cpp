@@ -856,7 +856,21 @@ void WebSocketClient::_handle_h2(String *temp) {
             } break;
             case Http2Frame::FRAME_TYPE_RST_STREAM: {
                 // RST_STREAM frame received
-                log_d("Received RST_STREAM frame[%u]: %d bytes", frame.getStreamId(), frame.getPayloadLength());
+                uint32_t error_code = 0;
+                if (frame.getPayloadLength() >= sizeof(error_code) && frame.getPayload() != nullptr) {
+                    const uint8_t* payload = frame.getPayload();
+                    error_code =
+                        ((uint32_t)payload[0] << 24) |
+                        ((uint32_t)payload[1] << 16) |
+                        ((uint32_t)payload[2] << 8) |
+                        (uint32_t)payload[3];
+                }
+                log_d(
+                    "Received RST_STREAM frame[%u]: %d bytes error_code=%u(0x%08x)",
+                    frame.getStreamId(),
+                    frame.getPayloadLength(),
+                    error_code,
+                    error_code);
                 if (frame.getStreamId()==0) {
                     h2Status.init();
                 } else {
@@ -890,6 +904,18 @@ WS_SIZE_T WebSocketClient::handleStream(bool enableQueue) {
             sid = h2Status.receivingData.streamId;
             rf = &h2Stream[sid].receivingFrame;
         } else {
+            for (auto& entry : h2Stream) {
+                ReceivingFrame* pending_rf = &entry.second.receivingFrame;
+                if (pending_rf->state == WS_FRAME_PAYLOAD && pending_rf->frame.length == pending_rf->index) {
+                    sid = entry.first;
+                    rf = pending_rf;
+                    h2Status.receivingData = Http2Status::ReceivingData(sid, 0);
+                    break;
+                }
+            }
+            if (sid != 0) {
+                break;
+            }
             // h2
             const int bite = waitForRead(socket_client);  // read byte by byte until timeout or end of headers
             if (bite < 0) {
