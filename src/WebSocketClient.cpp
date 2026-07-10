@@ -926,6 +926,9 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
             return WS_SIZE_T_NONE;
         }
     }
+    if (rf->state == WS_FRAME_PAYLOAD && rf->frame.length == rf->index) {
+        return 0;
+    }
     if (!socket_client->connected() || !socket_client->available()){
         return WS_SIZE_T_NONE;
     } else if (rf->state == WS_FRAME_PAYLOAD) {
@@ -1040,9 +1043,11 @@ bool WebSocketClient::getData(String& str, uint8_t *opcode, Http2Frame::StreamId
     if (remain == WS_SIZE_T_HEADER) {
       return false;
     } else if (0 <= (int)remain) {
-      char data[remain];  // reserve space
+      char data[remain > 0 ? remain : 1];  // reserve space for zero-length control frames
       const std::size_t len = getData(data, (std::size_t)remain, opcode, streamId);
-      str += data;
+      if (len > 0) {
+        str.concat(data, (unsigned int)len);
+      }
       return len == remain;
     }
     return false;
@@ -1070,7 +1075,6 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
         }
         return len;
     }
-    const int remain = handleStream();
     ReceivingFrame* rf;
     switch (httpVersion) {
     case HTTP_VERSION_1_1: {
@@ -1097,6 +1101,7 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
     default:
         return 0;
     }
+    const int remain = rf->state == WS_FRAME_PAYLOAD ? (rf->frame.length - rf->index) : handleStream();
     if (!data || rf->state != WS_FRAME_PAYLOAD) {
         if ((int)remain < 0) {
             return 0;
@@ -1105,7 +1110,7 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
         } else if (rf->state != WS_FRAME_PAYLOAD) {
             return 0;
         }
-    } else if (!socket_client->connected() || !socket_client->available()){
+    } else if (length > 0 && (!socket_client->connected() || !socket_client->available())){
         log_d("socket not connected or no data available");
         return 0;
     }
@@ -1145,7 +1150,7 @@ std::size_t WebSocketClient::getData(char *data, std::size_t length, uint8_t *op
         rf->state = WS_FRAME_OPCODE;
     }
     rf->_startMillis = millis();
-    return length;
+    return len;
 }
 
 void WebSocketClient::disconnectStream_h1(bool terminateCode) {

@@ -128,8 +128,15 @@ public:
     void bye(Http2Frame::StreamIdentifier streamId = 1, bool terminateCode = false);
     void reset();
 
-    // Get data off of the stream
+    /**
+     * @brief 受信済みWebSocketフレームのpayloadを取り出す。
+     * @details payload長0の制御フレームでも opcode と streamId を返せる。
+     */
     std::size_t getData(char *data, std::size_t capacity, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL, bool enableQueue = true);
+    /**
+     * @brief 受信済みWebSocketフレームのpayloadを String へ取り出す。
+     * @details payload長0の制御フレームでは文字列を追記せず、opcode のみ返す。
+     */
     bool getData(String& data, uint8_t *opcode = NULL, Http2Frame::StreamIdentifier *streamId = NULL);
 
     /**
@@ -142,6 +149,10 @@ public:
         return sendData(str.c_str(), str.length(), opcode, streamId);
     }
 
+    /**
+     * @brief 受信ストリームを1段階進め、読み出し可能なpayload長を返す。
+     * @details フレームヘッダの解析途中は `WS_SIZE_T_HEADER`、未完了時は `WS_SIZE_T_NONE` を返す。
+     */
     WS_SIZE_T handleStream(bool enableQueue = true);
 
     HTTPVersion getHTTPVersion() const {
