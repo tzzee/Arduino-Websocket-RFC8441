@@ -387,13 +387,18 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
         if (remain == WS_SIZE_T_HEADER) {
             continue;  // need more data
         } else if (0 <= remain) {
-            char data[remain];  // reserve space
+            char* data = ws_alloc(remain > 0 ? remain : 1);
+            if (data == nullptr) {
+                log_e("WebSocket handshake receive alloc failed size=%u", (unsigned)remain);
+                return 0;
+            }
             uint8_t opcode;
             Http2Frame::StreamIdentifier streamId;
             const std::size_t len = getData(data, (std::size_t)remain, &opcode, &streamId, enableQueue);
             log_d("getData len=%d, opcode=%d, streamId=%u", (int)len, opcode, streamId);
             // buffer the data when connection processing
             enqueueH2BufferedRxData(streamId, data, len, opcode);
+            ws_free(data);
             remain -= len;            
         }
         if (h2Stream.find(id) != h2Stream.end()) {
@@ -757,6 +762,12 @@ void WebSocketClient::_handle_h2(String *temp) {
                 }
             } break;
             case Http2Frame::FRAME_TYPE_WINDOW_UPDATE: {
+                    if (frame.getPayloadLength() < 4 || frame.getPayload() == nullptr) {
+                        log_w("Received short WINDOW_UPDATE frame[%u]: %u bytes",
+                              frame.getStreamId(),
+                              frame.getPayloadLength());
+                        break;
+                    }
                     // WINDOW_UPDATE has no flags
                     if (frame.getStreamId() == 0) {
                         // connection-level window update
@@ -790,6 +801,7 @@ void WebSocketClient::_handle_h2(String *temp) {
                 reset();
                 socket_client->stop();
                 log_d("Received GOAWAY frame[%u]: %d bytes, connection closed by server", frame.getStreamId(), frame.getPayloadLength());
+                break;
             }
             case Http2Frame::FRAME_TYPE_HEADERS: {
                 // HEADERS frame received
@@ -1063,17 +1075,27 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
     return WS_SIZE_T_HEADER;
 }
 
+/**
+ * @brief Receive the complete current WebSocket payload into a String.
+ * @details Uses SPI RAM for the temporary payload buffer to keep large frames
+ *          off the caller task stack.
+ */
 bool WebSocketClient::getData(String& str, uint8_t *opcode, Http2Frame::StreamIdentifier *streamId) {
     const int remain = handleStream();
     log_v("getData remain: %d", remain);
     if (remain == WS_SIZE_T_HEADER) {
       return false;
     } else if (0 <= (int)remain) {
-      char data[remain > 0 ? remain : 1];  // reserve space for zero-length control frames
+      char* data = ws_alloc(remain > 0 ? remain : 1);
+      if (data == nullptr) {
+        log_e("WebSocket receive alloc failed size=%u", (unsigned)remain);
+        return false;
+      }
       const std::size_t len = getData(data, (std::size_t)remain, opcode, streamId);
       if (len > 0) {
         str.concat(data, (unsigned int)len);
       }
+      ws_free(data);
       return len == remain;
     }
     return false;
@@ -1273,7 +1295,6 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
         } else {
             memcpy(p, str, size); p+=size;
         }
-        *p++ = '\0';
 
         switch (httpVersion) {
         case HTTP_VERSION_1_1: {
