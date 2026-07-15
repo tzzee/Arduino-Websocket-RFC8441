@@ -1218,6 +1218,11 @@ void WebSocketClient::disconnectStream_h2(Http2Frame::StreamIdentifier streamId,
     }
 }
 
+/**
+ * @brief Send a WebSocket frame through the active HTTP transport.
+ * @details The frame buffer is allocated from SPI RAM when available so a
+ *          large OCPP payload does not consume the caller task stack.
+ */
 std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t opcode, Http2Frame::StreamIdentifier streamId) {
     log_v("Sending data: %s",str);
 
@@ -1232,7 +1237,11 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
         if (WS_MASK > 0) {
             size_buf += 4;
         }
-        char buf[size_buf];
+        char* buf = ws_alloc(size_buf);
+        if (buf == nullptr) {
+            log_e("WebSocket frame alloc failed size=%u", (unsigned)size_buf);
+            return 0;
+        }
         char* p=buf;
 
         // Opcode; final fragment
@@ -1272,8 +1281,10 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
             if (r != static_cast<std::size_t>(size_buf)) {
                 log_w("HTTP/1.1 frame send incomplete raw=%u expected=%u", (unsigned)r, (unsigned)size_buf);
                 socket_client->stop();
+                ws_free(buf);
                 return 0;
             }
+            ws_free(buf);
             return r;
         } break;
         case HTTP_VERSION_2_0: {
@@ -1284,6 +1295,7 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                 if (r != dataFrame.bytesSize()) {
                     log_w("DATA frame send incomplete streamId=%u raw=%u expected=%u", streamId, (unsigned)r, (unsigned)dataFrame.bytesSize());
                     socket_client->stop();
+                    ws_free(buf);
                     return 0;
                 }
                 h2Status.totalTxSize+=size_buf;
@@ -1295,6 +1307,7 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
                       static_cast<unsigned>(h2Status.serverInitialWindowSize + h2Status.serverWindowSize),
                       static_cast<unsigned>(h2Stream[streamId].totalTxSize),
                       static_cast<unsigned>(h2Status.serverInitialWindowSize + h2Stream[streamId].serverWindowSize));
+                ws_free(buf);
                 return r - Http2Frame::Http2FrameHeaderSize;
             } else {
                 log_e("Stream ID %u not found", streamId);
@@ -1305,6 +1318,7 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
             break;
         }
         }
+        ws_free(buf);
     } else {
         log_w("Connection not established for sending data");
     }
