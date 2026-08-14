@@ -60,6 +60,9 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 
 #include "Http1Header.h"
 #include "Http2Frame.h"
+#include "PsramStlAllocator.h"
+#include <deque>
+#include <functional>
 #include <map>
 #include <queue>
 
@@ -238,7 +241,8 @@ private:
         }
     };
 
-    std::map<Http2Frame::StreamIdentifier, H2SendingStream> h2Stream;
+    std::map<Http2Frame::StreamIdentifier, H2SendingStream, std::less<Http2Frame::StreamIdentifier>,
+             ws_rfc8441::PsramStlAllocator<std::pair<const Http2Frame::StreamIdentifier, H2SendingStream>>> h2Stream;
 
     struct H2BufferedRxData {
         Http2Frame::StreamIdentifier streamId;
@@ -247,7 +251,7 @@ private:
         size_t cursor;
         uint8_t opcode;
     };
-    std::queue<H2BufferedRxData> h2BufferedRxDataQueue;
+    std::queue<H2BufferedRxData, std::deque<H2BufferedRxData, ws_rfc8441::PsramStlAllocator<H2BufferedRxData>>> h2BufferedRxDataQueue;
     size_t h2BufferedRxDataQueueBytes = 0U;
     static constexpr size_t H2_BUFFERED_RX_QUEUE_MAX_ITEMS = 16U;
     static constexpr size_t H2_BUFFERED_RX_QUEUE_MAX_BYTES = 16U * 1024U;
