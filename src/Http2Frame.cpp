@@ -1,16 +1,8 @@
 #include "Http2Frame.h"
+#include "WsMemory.h"
 
-#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
-#include <esp_heap_caps.h>
-#endif
-
-#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
-#define HTTP2_ALLOC(sz) heap_caps_malloc((sz), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-#define HTTP2_FREE(p) heap_caps_free((p))
-#else
-#define HTTP2_ALLOC(sz) new uint8_t[(sz)]
-#define HTTP2_FREE(p) delete[] (p)
-#endif
+#define HTTP2_ALLOC(sz) ws_rfc8441_malloc((sz))
+#define HTTP2_FREE(p) ws_rfc8441_free((p))
 
 const char* Http2Frame::HTTP2_CONNECTION_PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 

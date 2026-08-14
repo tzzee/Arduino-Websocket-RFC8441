@@ -5,12 +5,9 @@
 
 #include "WebSocketClientSha1.h"
 #include "WebSocketClientBase64.h"
+#include "WsMemory.h"
 #include <base64.h>
 #include <new>
-
-#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
-#include <esp_heap_caps.h>
-#endif
 
 static void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 #ifdef DEBUGGING
@@ -28,26 +25,11 @@ static void hexdump(const void *mem, uint32_t len, uint8_t cols = 16) {
 }
 
 static char* ws_alloc(size_t len) {
-#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
-    void* p = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (p == nullptr) {
-        p = heap_caps_malloc(len, MALLOC_CAP_8BIT);
-    }
-    return static_cast<char*>(p);
-#else
-    return new (std::nothrow) char[len];
-#endif
+    return static_cast<char*>(ws_rfc8441_malloc(len));
 }
 
 static void ws_free(char* p) {
-    if (p == nullptr) {
-        return;
-    }
-#if defined(ARDUINO_ARCH_ESP32) && defined(BOARD_HAS_PSRAM)
-    heap_caps_free(p);
-#else
-    delete[] p;
-#endif
+    ws_rfc8441_free(p);
 }
 
 void WebSocketClient::clearH2BufferedRxDataQueue() {
