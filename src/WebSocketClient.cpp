@@ -364,6 +364,15 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
 
     recvMillis = millis();
     while (waitForPeek(socket_client, recvMillis, timeoutMsec)) {
+        // waitForPeek()はavailable()==trueだと経過時間を見ずに即trueを返すため、
+        // アップグレード確認以外のフレームが途切れず届き続けるとtimeoutMsecが
+        // 無効化されループが無期限に続く。ここでループ全体の累積経過時間を
+        // 別途判定し、確実に打ち切る。
+        if (timeoutMsec > 0 && (millis() - recvMillis) > timeoutMsec) {
+            socket_client->stop();
+            log_w("WebSocket over HTTP/2 handshake timeout while waiting for upgrade confirmation");
+            return 0;
+        }
         const bool enableQueue = false;  // must be false during handshake
         int remain = handleStream(enableQueue);  // process incoming frames
         if (remain == WS_SIZE_T_HEADER) {
