@@ -948,9 +948,11 @@ WS_SIZE_T WebSocketClient::handleStream(bool enableQueue) {
 }
 
 WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Http2Frame::StreamIdentifier streamId) {
-    if (rf->state != WS_FRAME_OPCODE) {
+    if (rf->state != WS_FRAME_OPCODE && rf->state != WS_FRAME_PAYLOAD) {
+        // payload 読み出し中は戻さない(ループが1秒以上止まっただけで payload 先頭を opcode と誤読する)
         if ((millis() - rf->_startMillis) > socket_client->getTimeout()) {
             // timeout
+            log_w("WebSocket frame header timeout: stream=%u state=%d", (unsigned)streamId, (int)rf->state);
             rf->state = WS_FRAME_OPCODE;
             return WS_SIZE_T_NONE;
         }
@@ -977,6 +979,7 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
                 // the negotiated extensions defines the meaning of such a nonzero
                 // value, the receiving endpoint MUST _Fail the WebSocket
                 // Connection_.
+                log_w("WebSocket RSV bits set, close: stream=%u byte=0x%02x", (unsigned)streamId, (unsigned)finOpcode);
                 sendData((const char*)WS_CLOSE_BAD_REQUEST, sizeof(WS_CLOSE_BAD_REQUEST)-1, WS_OPCODE_CLOSE, streamId);
                 bye(streamId, false);
                 return WS_SIZE_T_NONE;
@@ -994,6 +997,7 @@ WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Ht
                     log_v("opcode: %d %x", rf->frame.fin, rf->frame.opcode);
                     break;
                 default:
+                    log_w("WebSocket unsupported opcode, close: stream=%u byte=0x%02x", (unsigned)streamId, (unsigned)finOpcode);
                     sendData((const char*)WS_CLOSE_UNSUPPORTED, sizeof(WS_CLOSE_UNSUPPORTED)-1, WS_OPCODE_CLOSE, streamId);
                     bye(streamId, false);
                     return WS_SIZE_T_NONE;

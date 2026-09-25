@@ -207,6 +207,13 @@ private:
         unsigned long _startMillis;
     } receivingFrame;
 
+    /**
+     * @brief WebSocketフレームのヘッダを1バイト読み進め、読み出し可能なpayload長を返す。
+     * @details ヘッダの途中で `getTimeout()` を超えて次のバイトが来なければ、ヘッダ待ちに戻す。
+     *          payload の読み出し中は戻さない。長さは確定しているので続きから読めばよく、
+     *          戻すと payload の先頭を opcode と誤読してストリームを閉じてしまう(HTTP/2 では
+     *          DATA フレームの残りバイト数ともずれる)。
+     */
     WS_SIZE_T _handleStream(WebSocketClient::ReceivingFrame *receivingFrame, Http2Frame::StreamIdentifier streamId);
 
 
@@ -236,8 +243,11 @@ private:
         uint32_t totalRxSize;
         uint32_t totalTxSize;
         ReceivingFrame receivingFrame;
-        H2SendingStream() : serverWindowSize(0), clientWindowSize(0), totalRxSize(0), totalTxSize(0) {
-            // Empty
+        H2SendingStream() : serverWindowSize(0), clientWindowSize(0), totalRxSize(0), totalTxSize(0), receivingFrame() {
+            // 未初期化の state が WS_FRAME_OPCODE 以外だと、最初の受信でヘッダ途中扱いになる
+            receivingFrame.state = WS_FRAME_OPCODE;
+            receivingFrame.index = 0;
+            receivingFrame._startMillis = 0;
         }
     };
 
