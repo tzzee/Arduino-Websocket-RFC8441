@@ -949,8 +949,11 @@ WS_SIZE_T WebSocketClient::handleStream(bool enableQueue) {
 
 WS_SIZE_T WebSocketClient::_handleStream(WebSocketClient::ReceivingFrame *rf, Http2Frame::StreamIdentifier streamId) {
     if (rf->state != WS_FRAME_OPCODE && rf->state != WS_FRAME_PAYLOAD) {
-        // payload 読み出し中は戻さない(ループが1秒以上止まっただけで payload 先頭を opcode と誤読する)
-        if ((millis() - rf->_startMillis) > socket_client->getTimeout()) {
+        // payload 読み出し中は戻さない(ループが1秒以上止まっただけで payload 先頭を opcode と誤読する)。
+        // ヘッダの途中でも、続きのバイトが届いているなら戻さない。こちらのループが止まっていただけで、
+        // 戻すと残りのヘッダを opcode と誤読する(MQTT の TLS ハンドシェイク中に発生)。
+        if ((millis() - rf->_startMillis) > socket_client->getTimeout() &&
+            socket_client->available() <= 0) {
             // timeout
             log_w("WebSocket frame header timeout: stream=%u state=%d", (unsigned)streamId, (int)rf->state);
             rf->state = WS_FRAME_OPCODE;
