@@ -2,6 +2,7 @@
 #define WEBSOCKETCLIENT_HTTP1HEADER_H_
 
 #include <Arduino.h>
+#include <cstdint>
 
 class Http1Header {
  public:

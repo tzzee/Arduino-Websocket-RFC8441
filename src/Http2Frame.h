@@ -2,6 +2,7 @@
 #define WEBSOCKETCLIENT_HTTP2FRAME_H_
 
 #include <Arduino.h>
+#include <cstdint>
 
 class Http2Frame {
  public:
