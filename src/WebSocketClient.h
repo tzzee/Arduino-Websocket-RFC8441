@@ -127,6 +127,14 @@ public:
     Http2Frame::StreamIdentifier handshake_h2(const char *path, const char *protocol, std::uint32_t timeoutMsec=10000);
 
     Http2Frame::StreamIdentifier handshake(const char *path, const char *protocol, std::uint32_t timeoutMsec=10000);
+    /**
+     * @brief HTTP/2 の接続の上で、返事を待たずに WebSocket の stream を張り始める。
+     * @details HTTP/2 の接続(TCP・前置き・SETTINGS)が済んでいるときだけ使える。extended CONNECT の HEADERS を
+     *          送ったらすぐ返る。サーバーの :status 200 は handleStream() が受け、そのあと hasStream(id) が true になる。
+     *          返事を待つ handshake() と違い、呼び出し側のループを止めない(mesh の root が leaf の stream を張るときなど)。
+     * @return 張り始めた stream の ID。HTTP/2 で接続済みでない・送れなかったときは 0
+     */
+    Http2Frame::StreamIdentifier beginHandshake_h2(const char *path, const char *protocol);
 
     void bye(Http2Frame::StreamIdentifier streamId = 1, bool terminateCode = false);
     void reset();
@@ -223,6 +231,7 @@ private:
     bool analyzeRequest_h1(const char *path, const char *protocol, std::uint32_t timeoutMsec);
 
     bool setting_h2(std::uint32_t timeoutMsec);
+    bool sendConnectHeaders_h2(const char *path, const char *protocol, Http2Frame::StreamIdentifier id);
     Http2Frame::StreamIdentifier connect_h2(const char *path, const char *protocol, Http2Frame::StreamIdentifier id, std::uint32_t timeoutMsec);
 
 

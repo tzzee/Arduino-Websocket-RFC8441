@@ -314,9 +314,15 @@ bool WebSocketClient::setting_h2(std::uint32_t timeoutMsec) {
     return false;
 }
 
-Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const char *protocol, Http2Frame::StreamIdentifier id, std::uint32_t timeoutMsec) {
+/**
+ * @brief extended CONNECT(RFC 8441)の HEADERS を送る。返事は待たない。
+ * @param path WebSocket の path
+ * @param protocol sec-websocket-protocol
+ * @param id 張る stream の ID
+ * @return 最後まで送れたら true
+ */
+bool WebSocketClient::sendConnectHeaders_h2(const char *path, const char *protocol, Http2Frame::StreamIdentifier id) {
     assert(httpVersion == HTTP_VERSION_2_0);  // Implemation error
-    // send extended CONNECT frame
     if (!h2Status.connected) {
         return false;  // not connected
     }
@@ -324,7 +330,6 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
     char keyStart[17];
     char b64Key[25];
     String key = "------------------------";
-    uint32_t recvMillis = millis();
 
     log_d("Sending websocket upgrade headers over HTTP/2");
 
@@ -340,8 +345,6 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
         key[i] = b64Key[i];
     }
 
-    recvMillis = millis();    
-    // send ACK
     Http2Frame::HeadersFramePayload framePayload {
         Http2Frame::HeaderFrameField(":method", "CONNECT"),
         Http2Frame::HeaderFrameField(":scheme", "ws"),
@@ -352,10 +355,32 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
         Http2Frame::HeaderFrameField("sec-websocket-version", "13"),
         // Http2Frame::HeaderFrameField("sec-websocket-key", key.c_str()),
     };
-    // hexdump(framePayload.toBytes(), framePayload.bytesSize());
     const Http2Frame headersFrame(Http2Frame::FRAME_TYPE_HEADERS, Http2Frame::FRAME_FLAG_END_HEADERS /*no END_STREAM*/, id, framePayload.bytesSize(), framePayload.toBytes());
     const size_t r = socket_client->write(headersFrame.toBytes(), headersFrame.bytesSize());
     log_d("Sent HEADERS frame[%u]: %d bytes", id, r);
+    return r == headersFrame.bytesSize();
+}
+
+Http2Frame::StreamIdentifier WebSocketClient::beginHandshake_h2(const char *path, const char *protocol) {
+    if (httpVersion != HTTP_VERSION_2_0 || !h2Status.connected || !socket_client->connected()) {
+        return 0;
+    }
+    const Http2Frame::StreamIdentifier streamId = genNewStreamId();
+    if (!sendConnectHeaders_h2(path, protocol, streamId)) {
+        log_w("WebSocket over HTTP/2 begin handshake failed: HEADERS not sent stream=%u", streamId);
+        return 0;
+    }
+    return streamId;
+}
+
+Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const char *protocol, Http2Frame::StreamIdentifier id, std::uint32_t timeoutMsec) {
+    assert(httpVersion == HTTP_VERSION_2_0);  // Implemation error
+    // send extended CONNECT frame
+    if (!h2Status.connected) {
+        return false;  // not connected
+    }
+    uint32_t recvMillis = millis();
+    sendConnectHeaders_h2(path, protocol, id);
 
     if (!waitForResponse(socket_client, recvMillis, timeoutMsec)) {
         log_w("connection error waiting for server response to preface");
