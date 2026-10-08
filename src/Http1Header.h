@@ -41,7 +41,17 @@ class Http1Header {
       Invalid,
       EndOfHeaders
     } state;
+    /// true ならログに値を出さない(トークンなど)
+    const bool masked = false;
     HeaderField(const char *name, const char *value): name(name), value(value), state(Valid) {
+    }
+    /**
+     * @brief ログに値を出すかを指定して作る。
+     * @param name 名前
+     * @param value 値
+     * @param masked true ならログに値を出さない
+     */
+    HeaderField(const char *name, const char *value, bool masked): name(name), value(value), state(Valid), masked(masked) {
     }
     HeaderField(State state): state(state) {
     }

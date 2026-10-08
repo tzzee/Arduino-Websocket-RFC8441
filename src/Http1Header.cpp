@@ -152,6 +152,9 @@ Http1Header::HeaderField Http1Header::HeaderField::fromBytes(const uint8_t* data
 Http1Header::HeaderFieldPayload::HeaderFieldPayload(std::initializer_list<HeaderField> init) {
   buffer_size = 0;
   for (const auto& fragment : init) {
+    if (fragment.state != HeaderField::Valid) {
+      continue;  // 省いた項目(追加のヘッダーが無いときなど)は書かない
+    }
     buffer_size += fragment.name.length();
     buffer_size += 2; // for : and space
     buffer_size += fragment.value.length();
@@ -160,7 +163,10 @@ Http1Header::HeaderFieldPayload::HeaderFieldPayload(std::initializer_list<Header
   buffer = new uint8_t[buffer_size];
   uint8_t* p = buffer;
   for (const auto& fragment : init) {
-    log_d("Header: %s: %s", fragment.name.c_str(), fragment.value.c_str());
+    if (fragment.state != HeaderField::Valid) {
+      continue;
+    }
+    log_d("Header: %s: %s", fragment.name.c_str(), fragment.masked ? "***" : fragment.value.c_str());
     memcpy(p, fragment.name.c_str(), fragment.name.length());
     p += fragment.name.length();
     *p++ = ':';

@@ -166,6 +166,17 @@ public:
      */
     WS_SIZE_T handleStream(bool enableQueue = true);
 
+    /**
+     * @brief HTTP/1.1 の接続の要求に足すヘッダーを 1 つ指定する(AWS IoT Secure Tunneling の access-token など)。
+     * @details 値はログに出さない。文字列は呼び出し側が handshake の終わりまで保つ。nullptr で外す。
+     * @param name ヘッダーの名前
+     * @param value ヘッダーの値
+     */
+    void setExtraHeader(const char *name, const char *value) {
+        extraHeaderName = name;
+        extraHeaderValue = value;
+    }
+
     HTTPVersion getHTTPVersion() const {
         return httpVersion;
     }
@@ -183,6 +194,8 @@ public:
 private:
     Client * const socket_client;
     const char *host;
+    const char *extraHeaderName = nullptr;   ///< setExtraHeader() で足すヘッダーの名前(呼び出し側が保つ)
+    const char *extraHeaderValue = nullptr;  ///< 同じく値(ログに出さない)
     const HTTPHandshakeVersion httpHandshakeVersion;
     const bool issocketio;
 

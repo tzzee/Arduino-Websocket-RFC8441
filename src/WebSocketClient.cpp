@@ -619,6 +619,9 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
             Http1Header::HeaderField("Sec-WebSocket-Key", key.c_str()),
             Http1Header::HeaderField("Sec-WebSocket-Protocol", protocol),
             Http1Header::HeaderField("Sec-WebSocket-Version", "13"),
+            (extraHeaderName && extraHeaderValue) ?
+                Http1Header::HeaderField(extraHeaderName, extraHeaderValue, true) :
+                Http1Header::HeaderField(Http1Header::HeaderField::Invalid),
         };
         const Http1Header http1Header(requestMethod, headerFields);
         socket_client->write(http1Header.toBytes(), http1Header.bytesSize());
