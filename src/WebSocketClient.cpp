@@ -198,7 +198,8 @@ static bool waitForPeek(Client* socket_client, std::uint32_t startMillis = 0, st
 }
 
 static bool waitForResponse(Client* socket_client, std::uint32_t startMillis, std::uint32_t timeoutMsec) {
-    Serial.print("Waiting");
+    // 前は Serial.print("Waiting") を改行なしで出していて、次のログの行の頭にくっついていた
+    log_v("WebSocket: waiting for response");
     if (!waitForPeek(socket_client, startMillis, timeoutMsec)) {
         return false;
     }
