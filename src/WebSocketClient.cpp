@@ -91,6 +91,7 @@ void WebSocketClient::reset() {
     }
     clearH2BufferedRxDataQueue();
     h2Status.init();
+    h2HeaderDecoder.reset();  // HPACK の動的表は接続ごと
     switch (httpHandshakeVersion) {
     case ONLY_HTTP_VERSION_1_1:
         httpVersion = HTTP_VERSION_1_1;
@@ -255,6 +256,7 @@ bool WebSocketClient::setting_h2(std::uint32_t timeoutMsec) {
     uint32_t recvMillis = millis();
 
     h2Status.init();
+    h2HeaderDecoder.reset();  // 新しい接続の HPACK の動的表は空から
 
     recvMillis = millis();    
     log_d("Sent HTTP/2 preface");
@@ -423,6 +425,11 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
         if (h2Stream.find(id) != h2Stream.end()) {
             log_d("WebSocket over HTTP/2 established");
             return id;  // success
+        }
+        if (lastHandshakeStatusStream == id && lastHandshakeStatus != 0 && lastHandshakeStatus != 200) {
+            // 断られた(401 など)。待ち時間いっぱいまで待たない
+            log_w("WebSocket over HTTP/2 refused stream=%u status=%d", id, lastHandshakeStatus);
+            return 0;
         }
     }
     log_w("WebSocket over HTTP/2 connection failed");
@@ -726,6 +733,28 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
     return serverKey.equals(String(b64Result));
 }
 
+void WebSocketClient::onH2HeaderField(const char* name, std::size_t nameLength, const char* value,
+                                      std::size_t valueLength, void* arg) {
+    WebSocketClient* const self = reinterpret_cast<WebSocketClient*>(arg);
+    // nghttp2 の inflater が返す名前と値は終端付き
+    (void)nameLength;
+    (void)valueLength;
+    const String field_name(name);
+    const String field_value(value);
+    const bool secret = field_name.equalsIgnoreCase("authorization") || field_name.equalsIgnoreCase("set-cookie");
+    log_d("Received HEADER: %s: %s", field_name.c_str(), secret ? "****" : field_value.c_str());
+    if (field_name.equals(":status")) {
+        self->lastHandshakeStatus = field_value.toInt();
+        self->lastHandshakeStatusStream = self->headerBlockStreamId;
+        if (field_value.equals("200")) {
+            log_d("WebSocket upgrade successful");
+            self->h2Stream.insert(std::pair<Http2Frame::StreamIdentifier, H2SendingStream>(self->headerBlockStreamId, H2SendingStream()));
+        } else {
+            log_w("WebSocket over HTTP/2 stream %u refused: status %s", self->headerBlockStreamId, field_value.c_str());
+        }
+    }
+}
+
 void WebSocketClient::_handle_h2(String *temp) {
     assert(httpVersion == HTTP_VERSION_2_0);  // Implemation error
     const Http2Frame frame = Http2Frame::fromBytes((const uint8_t*)temp->c_str(), temp->length());
@@ -829,36 +858,47 @@ void WebSocketClient::_handle_h2(String *temp) {
                 log_d("Received GOAWAY frame[%u]: %d bytes, connection closed by server", frame.getStreamId(), frame.getPayloadLength());
                 break;
             }
-            case Http2Frame::FRAME_TYPE_HEADERS: {
-                // HEADERS frame received
-                log_d("Received HEADERS frame[%u]: %d bytes", frame.getStreamId(), frame.getPayloadLength());
-                const Http2Frame::HeadersFramePayload framePayload = Http2Frame::HeadersFramePayload::fromBytes(frame.getPayload(), frame.getPayloadLength());
-                // hexdump(framePayload.toBytes(), framePayload.bytesSize());
-                for (std::size_t i = 0; i < framePayload.buffer_size;) {
-                    std::size_t r = framePayload.buffer_size-i;
-                    const Http2Frame::HeaderFrameField field = Http2Frame::HeaderFrameField::fromBytes(framePayload.toBytes() + i, &r);
-                    if (r == 0) {
-                        return;  // error
-                    } else {
-                        i += r;
+            case Http2Frame::FRAME_TYPE_HEADERS:
+            case Http2Frame::FRAME_TYPE_CONTINUATION: {
+                // HEADERS / CONTINUATION frame received
+                log_d("Received %s frame[%u]: %d bytes",
+                      frame.getType() == Http2Frame::FRAME_TYPE_HEADERS ? "HEADERS" : "CONTINUATION",
+                      frame.getStreamId(), frame.getPayloadLength());
+                const uint8_t* block = frame.getPayload();
+                std::size_t block_length = frame.getPayloadLength();
+                if (frame.getType() == Http2Frame::FRAME_TYPE_HEADERS) {
+                    // padding と priority を除く(RFC 9113 6.2)
+                    std::size_t pad_length = 0;
+                    if ((frame.getFlags() & Http2Frame::FRAME_FLAG_PADDED) && block_length > 0) {
+                        pad_length = block[0];
+                        block++;
+                        block_length--;
                     }
-                    log_d("Received HEADER: %s: %s", field.name.c_str(), field.value.c_str());
-                    if (field.name.equals(":status")) {
-                        lastHandshakeStatus = field.value.toInt();
-                        lastHandshakeStatusStream = frame.getStreamId();
-                        if (!field.value.equals("200")) {
-                            log_w("WebSocket over HTTP/2 stream %u refused: status %s", frame.getStreamId(), field.value.c_str());
-                        }
+                    if ((frame.getFlags() & Http2Frame::FRAME_FLAG_PRIORITY) && block_length >= 5) {
+                        block += 5;
+                        block_length -= 5;
                     }
-                    if (field.name.equals(":status") && field.value.equals("200")) {
-                        log_d("WebSocket upgrade successful");
-                        h2Stream.insert(std::pair<Http2Frame::StreamIdentifier, H2SendingStream>(frame.getStreamId(), H2SendingStream()));
+                    if (pad_length > block_length) {
+                        log_e("HEADERS frame[%u] padding too long", frame.getStreamId());
+                        reset();
+                        socket_client->stop();
+                        break;
                     }
+                    block_length -= pad_length;
+                    headerBlockStreamId = frame.getStreamId();
+                    headerBlockEndStream = (frame.getFlags() & Http2Frame::FRAME_FLAG_END_STREAM) != 0;
                 }
-                if (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) {
+                if (!h2HeaderDecoder.decode(block, block_length, (frame.getFlags() & Http2Frame::FRAME_FLAG_END_HEADERS) != 0,
+                                            &WebSocketClient::onH2HeaderField, this)) {
+                    // HPACK の状態が壊れたら、その接続はもう使えない(RFC 9113 4.3)
+                    reset();
+                    socket_client->stop();
+                    break;
+                }
+                if ((frame.getFlags() & Http2Frame::FRAME_FLAG_END_HEADERS) && headerBlockEndStream) {
                     // no DATA frame will be sent
                     log_d("HEADERS frame has END_STREAM flag");
-                    h2Stream.erase(frame.getStreamId());
+                    h2Stream.erase(headerBlockStreamId);
                 }
             } break;
             case Http2Frame::FRAME_TYPE_DATA: {

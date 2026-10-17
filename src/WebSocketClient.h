@@ -60,6 +60,7 @@ http://tools.ietf.org/html/draft-hixie-thewebsocketprotocol-75
 
 #include "Http1Header.h"
 #include "Http2Frame.h"
+#include "Http2HeaderDecoder.h"
 #include "PsramStlAllocator.h"
 #include <deque>
 #include <functional>
@@ -211,6 +212,16 @@ private:
     const char *host;
     const char *extraHeaderName = nullptr;   ///< setExtraHeader() で足すヘッダーの名前(呼び出し側が保つ)
     const char *extraHeaderValue = nullptr;  ///< 同じく値(ログに出さない)
+    /// 受けたヘッダー(HPACK)を読む。接続ごとの状態なので reset() で捨てる
+    Http2HeaderDecoder h2HeaderDecoder;
+    /// 読んでいるヘッダーのかたまりの stream と、それに END_STREAM が付いていたか(CONTINUATION へ持ち越す)
+    Http2Frame::StreamIdentifier headerBlockStreamId = 0;
+    bool headerBlockEndStream = false;
+    /**
+     * @brief 読んだヘッダー 1 つを受ける(Http2HeaderDecoder::FieldFn)。:status で stream の確立と断りを見る。
+     */
+    static void onH2HeaderField(const char* name, std::size_t nameLength, const char* value, std::size_t valueLength,
+                                void* arg);
     int lastHandshakeStatus = 0;  ///< 最後に受けた接続の要求への HTTP の status(getLastHandshakeStatus)
     Http2Frame::StreamIdentifier lastHandshakeStatusStream = 0;  ///< その stream
     const HTTPHandshakeVersion httpHandshakeVersion;
