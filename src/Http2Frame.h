@@ -77,7 +77,18 @@ class Http2Frame {
     static const uint8_t literalUnindexedHeaderFieldMask = 0b11110000;
     static const uint8_t literalHeaderFieldWithoutIndexing = 0b00000000;
     static const uint8_t literalHeaderFieldWithoutIndexingMask = 0b11110000;
+    /// true ならログに値を出さず、HPACK の Never Indexed で送る(Authorization など。RFC 7541 7.1.3)
+    const bool masked = false;
     HeaderFrameField(const char *name, const char *value): name(name), value(value) {
+    }
+    /**
+     * @brief ログに値を出すかを指定して作る。名前が空なら送らない(条件付きで足すヘッダーの置き場)。
+     * @param name 名前(HTTP/2 では小文字)
+     * @param value 値
+     * @param masked true ならログに値を出さない
+     */
+    HeaderFrameField(const char *name, const char *value, bool masked)
+        : name(name ? name : ""), value(value ? value : ""), masked(masked) {
     }
     ~HeaderFrameField() {
     }

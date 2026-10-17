@@ -355,6 +355,8 @@ bool WebSocketClient::sendConnectHeaders_h2(const char *path, const char *protoc
         Http2Frame::HeaderFrameField("sec-websocket-protocol", protocol),
         Http2Frame::HeaderFrameField("sec-websocket-version", "13"),
         // Http2Frame::HeaderFrameField("sec-websocket-key", key.c_str()),
+        // setExtraHeader() のヘッダー(OCPP の Basic 認証の authorization など)。同じ接続の上のどの stream にも付ける
+        Http2Frame::HeaderFrameField((extraHeaderName && extraHeaderValue) ? extraHeaderName : nullptr, extraHeaderValue, true),
     };
     const Http2Frame headersFrame(Http2Frame::FRAME_TYPE_HEADERS, Http2Frame::FRAME_FLAG_END_HEADERS /*no END_STREAM*/, id, framePayload.bytesSize(), framePayload.toBytes());
     const size_t r = socket_client->write(headersFrame.toBytes(), headersFrame.bytesSize());
@@ -428,6 +430,8 @@ Http2Frame::StreamIdentifier WebSocketClient::connect_h2(const char *path, const
 }
 
 Http2Frame::StreamIdentifier WebSocketClient::handshake(const char *path, const char *protocol, std::uint32_t timeoutMsec) {
+    lastHandshakeStatus = 0;
+    lastHandshakeStatusStream = 0;
     if (httpVersion == HTTP_VERSION_UNKNOWN) {
         log_d("Auto-detecting HTTP version");
         if (socket_client->connected()) {
@@ -658,6 +662,8 @@ bool WebSocketClient::analyzeRequest_h1(const char *path, const char *protocol, 
         const Http1Header::ResonseStatus status = Http1Header::ResonseStatus::fromBytes((const uint8_t*)temp.c_str(), &r);
         if (status.isValid()) {
             log_d("Response status: %d %s", status.statusCode, status.statusMessage.c_str());
+            lastHandshakeStatus = status.statusCode;
+            lastHandshakeStatusStream = 1;
             break;
         }
     }
@@ -837,6 +843,13 @@ void WebSocketClient::_handle_h2(String *temp) {
                         i += r;
                     }
                     log_d("Received HEADER: %s: %s", field.name.c_str(), field.value.c_str());
+                    if (field.name.equals(":status")) {
+                        lastHandshakeStatus = field.value.toInt();
+                        lastHandshakeStatusStream = frame.getStreamId();
+                        if (!field.value.equals("200")) {
+                            log_w("WebSocket over HTTP/2 stream %u refused: status %s", frame.getStreamId(), field.value.c_str());
+                        }
+                    }
                     if (field.name.equals(":status") && field.value.equals("200")) {
                         log_d("WebSocket upgrade successful");
                         h2Stream.insert(std::pair<Http2Frame::StreamIdentifier, H2SendingStream>(frame.getStreamId(), H2SendingStream()));

@@ -1,5 +1,6 @@
 #include "Http2Frame.h"
 #include "WsMemory.h"
+#include "HpackInteger.h"
 
 #define HTTP2_ALLOC(sz) ws_rfc8441_malloc((sz))
 #define HTTP2_FREE(p) ws_rfc8441_free((p))
@@ -217,14 +218,16 @@ Http2Frame::HeaderFrameField Http2Frame::HeaderFrameField::fromBytes(const uint8
 }
 
 Http2Frame::HeadersFramePayload::HeadersFramePayload(std::initializer_list<Http2Frame::HeaderFrameField> init) {
+  // 名前と値の長さは HPACK の整数で書く(2026-10-17 まで 1 バイトで 126 までしか書けず、長い Authorization を送れなかった)
   buffer_size = 0;
   for (const auto& fragment : init) {
-    buffer_size += 1; // for literalHeaderFieldWithoutIndexing byte
-    buffer_size += 1; // for name length byte
-    assert(fragment.name.length() <= 0b01111110);
+    if (fragment.name.length() == 0) {
+      continue;  // 足さないヘッダー
+    }
+    buffer_size += 1; // literal without indexing / never indexed (index 0)
+    buffer_size += HpackInteger::encodedSize(7, fragment.name.length());
     buffer_size += fragment.name.length();
-    buffer_size += 1; // for value length byte
-    assert(fragment.value.length() <= 0b01111110);
+    buffer_size += HpackInteger::encodedSize(7, fragment.value.length());
     buffer_size += fragment.value.length();
   }
   buffer = static_cast<uint8_t*>(HTTP2_ALLOC(buffer_size));
@@ -234,12 +237,15 @@ Http2Frame::HeadersFramePayload::HeadersFramePayload(std::initializer_list<Http2
   }
   uint8_t* p = buffer;
   for (const auto& fragment : init) {
-    log_d("Header: %s: %s", fragment.name.c_str(), fragment.value.c_str());
-    *p++ = HeaderFrameField::literalHeaderFieldWithoutIndexing; // literalHeaderFieldWithoutIndexing
-    *p++ = static_cast<uint8_t>(fragment.name.length());
+    if (fragment.name.length() == 0) {
+      continue;
+    }
+    log_d("Header: %s: %s", fragment.name.c_str(), fragment.masked ? "****" : fragment.value.c_str());
+    *p++ = fragment.masked ? HeaderFrameField::literalUnindexedHeaderField : HeaderFrameField::literalHeaderFieldWithoutIndexing;
+    p += HpackInteger::encode(7, 0, fragment.name.length(), p);
     memcpy(p, fragment.name.c_str(), fragment.name.length());
     p += fragment.name.length();
-    *p++ = static_cast<uint8_t>(fragment.value.length());
+    p += HpackInteger::encode(7, 0, fragment.value.length(), p);
     memcpy(p, fragment.value.c_str(), fragment.value.length());
     p += fragment.value.length();
   }

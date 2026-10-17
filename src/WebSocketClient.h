@@ -167,9 +167,10 @@ public:
     WS_SIZE_T handleStream(bool enableQueue = true);
 
     /**
-     * @brief HTTP/1.1 の接続の要求に足すヘッダーを 1 つ指定する(AWS IoT Secure Tunneling の access-token など)。
-     * @details 値はログに出さない。文字列は呼び出し側が handshake の終わりまで保つ。nullptr で外す。
-     * @param name ヘッダーの名前
+     * @brief 接続の要求に足すヘッダーを 1 つ指定する(AWS IoT Secure Tunneling の access-token、OCPP の Basic 認証の authorization など)。
+     * @details HTTP/1.1 の Upgrade と、HTTP/2 の拡張 CONNECT(どの stream にも)に付ける。値はログに出さず、HTTP/2 では
+     *          HPACK の Never Indexed で送る。文字列は呼び出し側が接続を使う間ずっと保つ。nullptr で外す。
+     * @param name ヘッダーの名前(HTTP/2 でも使うので小文字で書く)
      * @param value ヘッダーの値
      */
     void setExtraHeader(const char *name, const char *value) {
@@ -188,6 +189,20 @@ public:
      */
     bool hasStream(Http2Frame::StreamIdentifier streamId) const;
 
+    /**
+     * @brief 最後に受けた接続の要求への HTTP の status(HTTP/1.1 は 101、HTTP/2 は 200 が成功)を返す。
+     * @details 認証で断られたか(401・403)を、ネットワークの失敗と分けて見るのに使う。handshake() を始めるたびに 0 に戻す。
+     *          HTTP/2 で返事を待たずに張る stream(beginHandshake_h2)の status もここに入る。
+     * @param streamId 返した stream の ID を入れる先(nullptr 可。HTTP/1.1 は 1)
+     * @return status。まだ受けていなければ 0
+     */
+    int getLastHandshakeStatus(Http2Frame::StreamIdentifier *streamId = nullptr) const {
+        if (streamId) {
+            *streamId = lastHandshakeStatusStream;
+        }
+        return lastHandshakeStatus;
+    }
+
 
     void _handle_h2(String *temp);
 
@@ -196,6 +211,8 @@ private:
     const char *host;
     const char *extraHeaderName = nullptr;   ///< setExtraHeader() で足すヘッダーの名前(呼び出し側が保つ)
     const char *extraHeaderValue = nullptr;  ///< 同じく値(ログに出さない)
+    int lastHandshakeStatus = 0;  ///< 最後に受けた接続の要求への HTTP の status(getLastHandshakeStatus)
+    Http2Frame::StreamIdentifier lastHandshakeStatusStream = 0;  ///< その stream
     const HTTPHandshakeVersion httpHandshakeVersion;
     const bool issocketio;
 
