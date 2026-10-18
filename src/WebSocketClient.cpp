@@ -1,5 +1,6 @@
 //#define DEBUGGING
 
+#include "Http2WindowUpdate.h"
 #include "global.h"
 #include "WebSocketClient.h"
 
@@ -852,10 +853,25 @@ void WebSocketClient::_handle_h2(String *temp) {
                 break;
             } break;
             case Http2Frame::FRAME_TYPE_GOAWAY: {
-                // GOAWAY frame received
+                // GOAWAY frame received。理由(error code)と最後に受け付けた stream を先に読んで残す
+                // (RFC 9113 6.8: Last-Stream-ID 4 バイト + Error Code 4 バイト + 任意の debug data)。
+                // 2026-10-18、試験の SetVariables の応答の直後に Caddy から受けて取引中の要求が失われたが、理由が分からなかった
+                uint32_t last_stream_id = 0;
+                uint32_t error_code = 0xFFFFFFFFu;
+                const uint8_t* payload = frame.getPayload();
+                const std::size_t payload_length = frame.getPayloadLength();
+                if (payload && payload_length >= 8) {
+                    last_stream_id = ((static_cast<uint32_t>(payload[0]) & 0x7F) << 24) |
+                                     (static_cast<uint32_t>(payload[1]) << 16) |
+                                     (static_cast<uint32_t>(payload[2]) << 8) | payload[3];
+                    error_code = (static_cast<uint32_t>(payload[4]) << 24) | (static_cast<uint32_t>(payload[5]) << 16) |
+                                 (static_cast<uint32_t>(payload[6]) << 8) | payload[7];
+                }
+                log_w("Received GOAWAY frame[%u]: %d bytes lastStream=%u error=0x%x, connection closed by server",
+                      frame.getStreamId(), static_cast<int>(payload_length), static_cast<unsigned>(last_stream_id),
+                      static_cast<unsigned>(error_code));
                 reset();
                 socket_client->stop();
-                log_d("Received GOAWAY frame[%u]: %d bytes, connection closed by server", frame.getStreamId(), frame.getPayloadLength());
                 break;
             }
             case Http2Frame::FRAME_TYPE_HEADERS:
@@ -915,7 +931,10 @@ void WebSocketClient::_handle_h2(String *temp) {
                     if (((h2Status.clientInitialWindowSize+h2Status.clientWindowSize)-h2Status.totalRxSize)<h2Status.clientInitialWindowKeepSize) {
                         // send WINDOW_UPDATE to increase window size
                         const uint32_t increment = h2Status.totalRxSize-h2Status.clientWindowSize;
-                        Http2Frame windowUpdateFrame(Http2Frame::FRAME_TYPE_WINDOW_UPDATE, Http2Frame::FRAME_FLAG_NONE, 0, sizeof(increment), (uint8_t*)&increment);
+                        // 増分はネットワークバイト順で送る(2026-10-18 まで memcpy でリトルエンディアンのまま送り、FLOW_CONTROL_ERROR になった)
+                        uint8_t incrementBytes[4];
+                        Http2WindowUpdate::encodeIncrement(increment, incrementBytes);
+                        Http2Frame windowUpdateFrame(Http2Frame::FRAME_TYPE_WINDOW_UPDATE, Http2Frame::FRAME_FLAG_NONE, 0, sizeof(incrementBytes), incrementBytes);
                         if (windowUpdateFrame.bytesSize() == socket_client->write(windowUpdateFrame.toBytes(), windowUpdateFrame.bytesSize())) {
                             h2Status.clientWindowSize += increment;
                             log_d("Sent connection-level WINDOW_UPDATE: %u", increment);
@@ -924,7 +943,10 @@ void WebSocketClient::_handle_h2(String *temp) {
                     if ((h2Status.clientInitialWindowSize+stream.clientWindowSize)-stream.totalRxSize<h2Status.clientInitialWindowKeepSize) {
                         // send WINDOW_UPDATE to increase window size
                         const uint32_t increment = stream.totalRxSize-stream.clientWindowSize;
-                        Http2Frame windowUpdateFrame(Http2Frame::FRAME_TYPE_WINDOW_UPDATE, Http2Frame::FRAME_FLAG_NONE, frame.getStreamId(), sizeof(increment), (uint8_t*)&increment);
+                        // 増分はネットワークバイト順で送る(2026-10-18 まで memcpy でリトルエンディアンのまま送り、FLOW_CONTROL_ERROR になった)
+                        uint8_t incrementBytes[4];
+                        Http2WindowUpdate::encodeIncrement(increment, incrementBytes);
+                        Http2Frame windowUpdateFrame(Http2Frame::FRAME_TYPE_WINDOW_UPDATE, Http2Frame::FRAME_FLAG_NONE, frame.getStreamId(), sizeof(incrementBytes), incrementBytes);
                         if (windowUpdateFrame.bytesSize() == socket_client->write(windowUpdateFrame.toBytes(), windowUpdateFrame.bytesSize())) {
                             stream.clientWindowSize += increment;
                             log_d("Sent stream-level WINDOW_UPDATE: %u", increment);
