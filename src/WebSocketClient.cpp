@@ -1,6 +1,7 @@
 //#define DEBUGGING
 
 #include "Http2WindowUpdate.h"
+#include "Http2DataFramePolicy.h"
 #include "global.h"
 #include "WebSocketClient.h"
 
@@ -923,7 +924,11 @@ void WebSocketClient::_handle_h2(String *temp) {
                 if (h2Stream.find(frame.getStreamId())!=h2Stream.end()) {
                     H2SendingStream& stream = h2Stream[frame.getStreamId()];
 
-                    h2Status.receivingData = Http2Status::ReceivingData(frame.getStreamId(), frame.getPayloadLength());
+                    const Http2DataFrameDecision dataDecision = Http2DataFrameDecision::decide(
+                        frame.getPayloadLength(), (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) != 0);
+                    if (dataDecision.trackPayload) {
+                        h2Status.receivingData = Http2Status::ReceivingData(frame.getStreamId(), frame.getPayloadLength());
+                    }
                     h2Status.totalRxSize += frame.getFrameLength();
                     stream.totalRxSize += frame.getFrameLength();
                     log_d("Received DATA frame[%u]: %u bytes totalRx=%u/%u streamRx=%u/%u", frame.getStreamId(), frame.getPayloadLength(), h2Status.totalRxSize, h2Status.clientInitialWindowSize+h2Status.clientWindowSize, stream.totalRxSize, h2Status.clientInitialWindowSize+stream.clientWindowSize);
@@ -952,7 +957,11 @@ void WebSocketClient::_handle_h2(String *temp) {
                             log_d("Sent stream-level WINDOW_UPDATE: %u", increment);
                         }
                     }
-                    if (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) {
+                    if (dataDecision.closeStream) {
+                        // 中身の無い END_STREAM。受け取り中の印は立てていないので、ここで閉じる(Http2DataFramePolicy.h)
+                        log_d("empty DATA frame has END_STREAM flag, close stream[%u]", frame.getStreamId());
+                        h2Stream.erase(frame.getStreamId());
+                    } else if (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) {
                         // no more DATA frame will be sent
                         log_d("DATA frame has END_STREAM flag");
                         h2Status.receivingData.endStream = true;
