@@ -1356,6 +1356,18 @@ void WebSocketClient::disconnectStream_h2(Http2Frame::StreamIdentifier streamId,
  * @details The frame buffer is allocated from SPI RAM when available so a
  *          large OCPP payload does not consume the caller task stack.
  */
+std::size_t WebSocketClient::writeAll(const uint8_t* buf, std::size_t size) {
+    std::size_t written = 0;
+    while (written < size) {
+        const std::size_t r = socket_client->write(buf + written, size - written);
+        if (r == 0) {
+            break;
+        }
+        written += r;
+    }
+    return written;
+}
+
 std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t opcode, Http2Frame::StreamIdentifier streamId) {
     log_v("Sending data: %s",str);
 
@@ -1409,7 +1421,7 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
 
         switch (httpVersion) {
         case HTTP_VERSION_1_1: {
-            const std::size_t r = socket_client->write((uint8_t*)buf, size_buf);
+            const std::size_t r = writeAll((uint8_t*)buf, size_buf);
             if (r != static_cast<std::size_t>(size_buf)) {
                 log_w("HTTP/1.1 frame send incomplete raw=%u expected=%u", (unsigned)r, (unsigned)size_buf);
                 socket_client->stop();
@@ -1423,7 +1435,7 @@ std::size_t WebSocketClient::sendData(const char *str, std::size_t size, uint8_t
             if (h2Stream.find(streamId) != h2Stream.end()) {
                 // send DATA frame
                 const Http2Frame dataFrame(Http2Frame::FRAME_TYPE_DATA, Http2Frame::FRAME_FLAG_NONE, streamId, size_buf, (uint8_t*)buf);
-                const std::size_t r = socket_client->write(dataFrame.toBytes(), dataFrame.bytesSize());
+                const std::size_t r = writeAll(dataFrame.toBytes(), dataFrame.bytesSize());
                 if (r != dataFrame.bytesSize()) {
                     log_w("DATA frame send incomplete streamId=%u raw=%u expected=%u", streamId, (unsigned)r, (unsigned)dataFrame.bytesSize());
                     socket_client->stop();

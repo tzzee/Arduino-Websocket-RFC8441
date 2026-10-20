@@ -208,6 +208,15 @@ public:
     void _handle_h2(String *temp);
 
 private:
+    /**
+     * @brief 書けた分を進めながら、全部を書くまで socket_client に書き続ける。
+     * @details TLS(mbedtls_ssl_write)は 1 回に 16384 バイトまでしか書かず、書けた長さを返す。1 回で済ませると、
+     *          それを超える WebSocket のフレームは毎回途中で切って接続を閉じていた(2026-10-21 の調べ)。
+     * @param buf 書くデータ
+     * @param size 長さ
+     * @return 書けた長さ(0 が返ったら、そこで止める)
+     */
+    std::size_t writeAll(const uint8_t* buf, std::size_t size);
     Client * const socket_client;
     const char *host;
     const char *extraHeaderName = nullptr;   ///< setExtraHeader() で足すヘッダーの名前(呼び出し側が保つ)
