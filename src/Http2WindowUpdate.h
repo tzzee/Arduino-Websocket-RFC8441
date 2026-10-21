@@ -39,6 +39,35 @@ inline std::uint32_t decodeIncrement(const std::uint8_t in[4]) {
           (static_cast<std::uint32_t>(in[2]) << 8) | static_cast<std::uint32_t>(in[3])) & kMaxIncrement;
 }
 
+/**
+ * @brief 受信の窓を足し戻す(WINDOW_UPDATE を送る)かを返す。
+ * @details 窓の残りを「(初期値 + 足し戻した累計) - 受けた累計」と符号なしで引くと、受けた累計が窓を超えたとき
+ *          巨大な値に化けて「まだ残っている」と判断し、二度と WINDOW_UPDATE を送らなかった。受けた累計を DATA の
+ *          ヘッダー 9 バイト込みで数えていた(相手は中身だけで数える)ので、16KB の DATA で窓を少し超え、相手は窓が
+ *          尽きて残りを送らず、20000 文字の下りが 16470 バイトで止まった(2026-10-21)。足し算で比べる。
+ * @param initialWindow 窓の初期値
+ * @param granted 足し戻した累計
+ * @param consumed 受けた DATA の中身の累計
+ * @param keepSize 窓の残りがこれを下回ったら足し戻す
+ * @return 送るなら true
+ */
+inline bool shouldRefill(std::uint32_t initialWindow, std::uint32_t granted, std::uint32_t consumed,
+                         std::uint32_t keepSize) {
+  return static_cast<std::uint64_t>(consumed) + keepSize >
+         static_cast<std::uint64_t>(initialWindow) + granted;
+}
+
+/**
+ * @brief 足し戻す増分を返す(受けた分だけ戻し、窓を初期値に戻す)。
+ * @param granted 足し戻した累計
+ * @param consumed 受けた DATA の中身の累計
+ * @return 増分(0 なら送らない。WINDOW_UPDATE の増分 0 は誤り)
+ */
+inline std::uint32_t refillIncrement(std::uint32_t granted, std::uint32_t consumed) {
+  const std::uint32_t inc = consumed > granted ? consumed - granted : 0u;
+  return inc > kMaxIncrement ? kMaxIncrement : inc;
+}
+
 }  // namespace Http2WindowUpdate
 
 #endif  // WEBSOCKETCLIENT_HTTP2WINDOWUPDATE_H_

@@ -296,6 +296,13 @@ private:
 
     String h2TempBuffer;
     Http2Status h2Status;
+    /// 知らない stream 宛ての DATA の中身で、まだソケットから読み捨てていないバイト数(Http2DataFrameDecision)
+    std::size_t h2DiscardRemain = 0;
+
+    /**
+     * @brief 受けた DATA の累計が接続の窓の残りの下限を割ったら、接続の WINDOW_UPDATE を送る。
+     */
+    void sendConnectionWindowUpdateIfNeeded();
 
     struct H2SendingStream {
         uint32_t serverWindowSize;

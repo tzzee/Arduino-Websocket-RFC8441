@@ -94,6 +94,7 @@ void WebSocketClient::reset() {
     }
     clearH2BufferedRxDataQueue();
     h2Status.init();
+    h2DiscardRemain = 0;
     h2HeaderDecoder.reset();  // HPACK の動的表は接続ごと
     switch (httpHandshakeVersion) {
     case ONLY_HTTP_VERSION_1_1:
@@ -259,6 +260,7 @@ bool WebSocketClient::setting_h2(std::uint32_t timeoutMsec) {
     uint32_t recvMillis = millis();
 
     h2Status.init();
+    h2DiscardRemain = 0;
     h2HeaderDecoder.reset();  // 新しい接続の HPACK の動的表は空から
 
     recvMillis = millis();    
@@ -930,25 +932,17 @@ void WebSocketClient::_handle_h2(String *temp) {
                     if (dataDecision.trackPayload) {
                         h2Status.receivingData = Http2Status::ReceivingData(frame.getStreamId(), frame.getPayloadLength());
                     }
-                    h2Status.totalRxSize += frame.getFrameLength();
-                    stream.totalRxSize += frame.getFrameLength();
+                    // 流量の制御で数えるのは DATA の中身だけ(RFC 9113 6.9)。ヘッダー込みで数えると窓を超えて見える
+                    h2Status.totalRxSize += frame.getPayloadLength();
+                    stream.totalRxSize += frame.getPayloadLength();
                     log_d("Received DATA frame[%u]: %u bytes totalRx=%u/%u streamRx=%u/%u", frame.getStreamId(), frame.getPayloadLength(), h2Status.totalRxSize, h2Status.clientInitialWindowSize+h2Status.clientWindowSize, stream.totalRxSize, h2Status.clientInitialWindowSize+stream.clientWindowSize);
 
-                    if (((h2Status.clientInitialWindowSize+h2Status.clientWindowSize)-h2Status.totalRxSize)<h2Status.clientInitialWindowKeepSize) {
+                    sendConnectionWindowUpdateIfNeeded();
+                    if (Http2WindowUpdate::shouldRefill(h2Status.clientInitialWindowSize, stream.clientWindowSize,
+                                                        stream.totalRxSize, h2Status.clientInitialWindowKeepSize) &&
+                        Http2WindowUpdate::refillIncrement(stream.clientWindowSize, stream.totalRxSize) > 0) {
                         // send WINDOW_UPDATE to increase window size
-                        const uint32_t increment = h2Status.totalRxSize-h2Status.clientWindowSize;
-                        // 増分はネットワークバイト順で送る(2026-10-18 まで memcpy でリトルエンディアンのまま送り、FLOW_CONTROL_ERROR になった)
-                        uint8_t incrementBytes[4];
-                        Http2WindowUpdate::encodeIncrement(increment, incrementBytes);
-                        Http2Frame windowUpdateFrame(Http2Frame::FRAME_TYPE_WINDOW_UPDATE, Http2Frame::FRAME_FLAG_NONE, 0, sizeof(incrementBytes), incrementBytes);
-                        if (windowUpdateFrame.bytesSize() == socket_client->write(windowUpdateFrame.toBytes(), windowUpdateFrame.bytesSize())) {
-                            h2Status.clientWindowSize += increment;
-                            log_d("Sent connection-level WINDOW_UPDATE: %u", increment);
-                        }
-                    }                    
-                    if ((h2Status.clientInitialWindowSize+stream.clientWindowSize)-stream.totalRxSize<h2Status.clientInitialWindowKeepSize) {
-                        // send WINDOW_UPDATE to increase window size
-                        const uint32_t increment = stream.totalRxSize-stream.clientWindowSize;
+                        const uint32_t increment = Http2WindowUpdate::refillIncrement(stream.clientWindowSize, stream.totalRxSize);
                         // 増分はネットワークバイト順で送る(2026-10-18 まで memcpy でリトルエンディアンのまま送り、FLOW_CONTROL_ERROR になった)
                         uint8_t incrementBytes[4];
                         Http2WindowUpdate::encodeIncrement(increment, incrementBytes);
@@ -968,7 +962,14 @@ void WebSocketClient::_handle_h2(String *temp) {
                         h2Status.receivingData.endStream = true;
                     }
                 } else {
-                    log_w("Received DATA frame for unknown stream[%u]: %d bytes", frame.getStreamId(), frame.getPayloadLength());
+                    // 中身はソケットに残っているので読み捨てる(残すと次のフレームのヘッダーとして読み、区切りがずれる)。
+                    // 接続の窓は全部の DATA で減るので、累計にも数える
+                    const Http2DataFrameDecision unknownDecision = Http2DataFrameDecision::decide(
+                        frame.getPayloadLength(), (frame.getFlags()&Http2Frame::FRAME_FLAG_END_STREAM) != 0, false);
+                    h2DiscardRemain += unknownDecision.discardBytes;
+                    h2Status.totalRxSize += frame.getPayloadLength();
+                    log_w("Received DATA frame for unknown stream[%u]: %d bytes, discard", frame.getStreamId(), frame.getPayloadLength());
+                    sendConnectionWindowUpdateIfNeeded();
                 }
             } break;
             case Http2Frame::FRAME_TYPE_RST_STREAM: {
@@ -1003,6 +1004,23 @@ void WebSocketClient::_handle_h2(String *temp) {
 
 }
 
+void WebSocketClient::sendConnectionWindowUpdateIfNeeded() {
+    if (Http2WindowUpdate::shouldRefill(h2Status.clientInitialWindowSize, h2Status.clientWindowSize,
+                                        h2Status.totalRxSize, h2Status.clientInitialWindowKeepSize) &&
+        Http2WindowUpdate::refillIncrement(h2Status.clientWindowSize, h2Status.totalRxSize) > 0) {
+        // send WINDOW_UPDATE to increase window size
+        const uint32_t increment = Http2WindowUpdate::refillIncrement(h2Status.clientWindowSize, h2Status.totalRxSize);
+        // 増分はネットワークバイト順で送る(2026-10-18 まで memcpy でリトルエンディアンのまま送り、FLOW_CONTROL_ERROR になった)
+        uint8_t incrementBytes[4];
+        Http2WindowUpdate::encodeIncrement(increment, incrementBytes);
+        Http2Frame windowUpdateFrame(Http2Frame::FRAME_TYPE_WINDOW_UPDATE, Http2Frame::FRAME_FLAG_NONE, 0, sizeof(incrementBytes), incrementBytes);
+        if (windowUpdateFrame.bytesSize() == socket_client->write(windowUpdateFrame.toBytes(), windowUpdateFrame.bytesSize())) {
+            h2Status.clientWindowSize += increment;
+            log_d("Sent connection-level WINDOW_UPDATE: %u", increment);
+        }
+    }
+}
+
 WS_SIZE_T WebSocketClient::handleStream(bool enableQueue) {
     if (enableQueue && h2BufferedRxDataQueue.size()) {
         return h2BufferedRxDataQueue.front().length;
@@ -1032,6 +1050,20 @@ WS_SIZE_T WebSocketClient::handleStream(bool enableQueue) {
             }
             if (sid != 0) {
                 break;
+            }
+            if (h2DiscardRemain > 0) {
+                // 知らない stream 宛ての DATA の中身を、次のフレームのヘッダーを読む前に読み捨てる
+                uint8_t discard[256];
+                const int avail = socket_client->available();
+                if (avail <= 0) {
+                    return WS_SIZE_T_NONE;
+                }
+                const std::size_t want = std::min(h2DiscardRemain, std::min(sizeof(discard), (std::size_t)avail));
+                const int got = socket_client->read(discard, want);
+                if (got > 0) {
+                    h2DiscardRemain -= (std::size_t)got;
+                }
+                return WS_SIZE_T_NONE;
             }
             // h2
             const int bite = waitForRead(socket_client);  // read byte by byte until timeout or end of headers

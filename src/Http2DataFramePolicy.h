@@ -13,6 +13,11 @@
 struct Http2DataFrameDecision {
   bool trackPayload;  ///< 中身を受け取り中の印を立てる(中身が 1 バイト以上あるとき)
   bool closeStream;   ///< その場で stream を閉じる(中身が無く END_STREAM が付いているとき)
+  /// ソケットから読み捨てるバイト数(知らない stream 宛ての DATA の中身)。
+  /// 知らない stream(こちらが閉じた直後の子機の stream など)宛ての DATA は、9 バイトのヘッダーだけ除いて中身を
+  /// ソケットに残していた。その中身を次のフレームのヘッダーとして読み、フレームの区切りがずれて以後の受け取りが
+  /// 止まりうる(2026-10-21 の点検)。中身は読み捨てる
+  std::size_t discardBytes;
 
   /**
    * @brief DATA フレームの扱いを決める。
@@ -21,9 +26,21 @@ struct Http2DataFrameDecision {
    * @return 扱い
    */
   static Http2DataFrameDecision decide(std::size_t payloadLength, bool endStream) {
+    return decide(payloadLength, endStream, true);
+  }
+
+  /**
+   * @brief DATA フレームの扱いを、宛先の stream を知っているかも含めて決める。
+   * @param payloadLength フレームの中身の長さ
+   * @param endStream END_STREAM が付いているか
+   * @param knownStream 宛先の stream を知っているか
+   * @return 扱い(知らない stream なら、印も閉じもせず中身を読み捨てる)
+   */
+  static Http2DataFrameDecision decide(std::size_t payloadLength, bool endStream, bool knownStream) {
     Http2DataFrameDecision d;
-    d.trackPayload = payloadLength > 0;
-    d.closeStream = payloadLength == 0 && endStream;
+    d.trackPayload = knownStream && payloadLength > 0;
+    d.closeStream = knownStream && payloadLength == 0 && endStream;
+    d.discardBytes = knownStream ? 0 : payloadLength;
     return d;
   }
 };
