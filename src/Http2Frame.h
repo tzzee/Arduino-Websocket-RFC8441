@@ -149,7 +149,16 @@ struct Http2Status {
       Http2Frame::StreamIdentifier streamId;
       size_t remainLength;
       bool endStream;
-      ReceivingData(Http2Frame::StreamIdentifier streamId = 0, size_t remainLength = 0) : streamId(streamId), remainLength(remainLength) {
+      /**
+       * @brief 受け取り中の DATA の印を作る
+       * @details endStream も必ず false で始める。2026-10-26 まで初期化しておらず、残ったスタックの値で真になると、
+       *          中身を読み終えたところで subtract() が真を返し、END_STREAM の無いストリーム(OCPP の WebSocket)を
+       *          黙って消していた(屋外で CSR を作った直後に stale connection detected。M261026-0732-cs)
+       * @param streamId 受け取り中のストリーム
+       * @param remainLength 残りの中身の長さ[byte]
+       */
+      ReceivingData(Http2Frame::StreamIdentifier streamId = 0, size_t remainLength = 0)
+          : streamId(streamId), remainLength(remainLength), endStream(false) {
       }
       void init();
       bool subtract(size_t len);
