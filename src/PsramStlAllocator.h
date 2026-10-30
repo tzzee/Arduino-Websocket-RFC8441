@@ -22,7 +22,13 @@ struct PsramStlAllocator {
   T* allocate(std::size_t n) {
     void* p = ws_rfc8441_malloc(n * sizeof(T));
     if (p == nullptr) {
+      // 例外を切った版(-fno-exceptions)では throw を書けないので、libstdc++ の __throw_bad_alloc で同じ例外を投げる
+      // (受ける所は無く、どちらの版も std::terminate で止まる)
+#if defined(__cpp_exceptions)
       throw std::bad_alloc();
+#else
+      std::__throw_bad_alloc();
+#endif
     }
     return static_cast<T*>(p);
   }
